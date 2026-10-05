@@ -32,6 +32,17 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Verify version consistency
+        run: |
+          GRADLE_VER=$(grep -oP '(?<=^version = ")[^"]+' build.gradle.kts)
+          YML_VER=$(grep -oP "(?<=version: ')[^']+" src/main/resources/paper-plugin.yml)
+          VEL_VER=$(grep -oP '(?<=version = ")[^"]+' velocity/src/main/java/com/junxiex/mikuchat/velocity/MikuChatVelocity.java)
+          echo "build.gradle.kts=$GRADLE_VER  paper-plugin.yml=$YML_VER  @Plugin=$VEL_VER"
+          if [ "$GRADLE_VER" != "$YML_VER" ] || [ "$GRADLE_VER" != "$VEL_VER" ]; then
+            echo "::error::版本号不一致，请同步 build.gradle.kts / paper-plugin.yml / MikuChatVelocity.java"
+            exit 1
+          fi
+
       - name: Build
         run: |
           chmod +x gradlew
