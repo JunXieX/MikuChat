@@ -1,0 +1,28 @@
+# @ 艾特配置
+
+# 用户名匹配正则（Minecraft 用户名仅含字母、数字、下划线）
+pattern: '@([A-Za-z0-9_]{1,16})'
+
+# 全体艾特别名（大小写不敏感）
+all-aliases:
+  - "all"
+  - "所有人"
+  - "全体"
+
+permissions:
+  all: mikuchat.mention.all
+
+cooldown:
+  # 同一玩家使用 @all 的冷却（毫秒）
+  sender-all-millis: 30000
+  # 同一接收者收到 @ 提醒的最小间隔（毫秒）
+  notify-millis: 1000
+
+notification:
+  # 是否发送 ActionBar 提示
+  action-bar: true
+  sound:
+    enabled: true
+    name: "entity.experience_orb.pickup"
+    volume: 1.0
+    pitch: 1.5

@@ -1,0 +1,14 @@
+# 本服频道：消息仅在本服务器广播
+id: local
+display-name: "<gray>本服</gray>"
+scope: SERVER
+# 使用该频道所需权限，留空表示所有人可用
+permission: ""
+# 引用的格式规则 id（见 format.yml）
+format: default
+# 引用的防刷屏策略 id（见 antispam.yml），留空表示 default
+antispam: default
+# 引用的过滤策略 id（见 filter/config.yml），留空表示 default
+filter: default
+# 是否写入聊天留档
+log: true

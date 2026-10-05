@@ -1,0 +1,101 @@
+# MikuChat English messages (MiniMessage syntax)
+# Placeholders use the {name} form.
+
+generic:
+  no-permission: "<red>You do not have permission to do that."
+  player-not-found: "<red>Player <white>{player}</white> not found."
+  player-only: "<red>This command can only be used by players."
+  invalid-number: "<red>Invalid number: <white>{value}</white>."
+  reloaded: "<green>Configuration reloaded."
+  reloaded-module: "<green>Module <white>{module}</white> reloaded."
+  module-not-found: "<red>Module <white>{module}</white> not found."
+  unknown-command: "<red>Unknown subcommand. Type <white>/mchat help</white>."
+  cooldown-command: "<red>Too frequent. Wait <white>{seconds}s</white> before trying again."
+
+command:
+  help-header: "<gradient:#7ad0ff:#a98bff>MikuChat</gradient> <dark_gray>·</dark_gray> <gray>Command help"
+  help-line: "<click:suggest_command:'{command}'><hover:show_text:'{description}'><white>{usage}</white></hover></click> <dark_gray>-</dark_gray> <gray>{description}"
+  info-header: "<gradient:#7ad0ff:#a98bff>MikuChat</gradient> <dark_gray>·</dark_gray> <gray>Runtime info"
+  info-line: "<gray>{key}<dark_gray>: <white>{value}"
+
+channel:
+  switched: "<green>Switched to channel <white>{channel}</white>.</green>"
+  not-found: "<red>Channel <white>{channel}</white> not found."
+  trigger-empty: "<red>Nothing after the <white>{symbol}</white> symbol."
+  no-permission: "<red>You do not have permission to use channel <white>{channel}</white>."
+  disabled: "<red>Channel <white>{channel}</white> is unavailable."
+  already: "<gray>You are already in channel <white>{channel}</white>."
+  list-header: "<gray>Available channels:"
+  list-line: "<hover:show_text:'{description}'><click:run_command:'/mchat channel {id}'><white>{id}</white></click></hover> <dark_gray>·</dark_gray> <gray>{display}"
+
+filter:
+  replaced: "<yellow>Your message contained blocked words and was filtered.</yellow>"
+  blocked: "<red>Your message contained blocked content and was blocked.</red>"
+  ad-blocked: "<red>Advertising and links are not allowed."
+
+antispam:
+  cooldown: "<red>Too fast! Wait <white>{seconds}s</white> before chatting again."
+  throttle: "<red>You are sending messages too frequently."
+  similar: "<red>Please do not repeat similar messages."
+  repeat: "<red>Please do not spam."
+  ignored: "<red>Your message was ignored."
+  staff-notify: "<gray>Player <white>{player}</white> triggered anti-spam rule <white>{type}</white>."
+
+mute:
+  muted-you: "<red>You are muted. <gray>Reason: <white>{reason}</white> <gray>Remaining: <white>{duration}</white>"
+  muted-target: "<green>Muted <white>{player}</white>. <gray>Duration: <white>{duration}</white> <gray>Reason: <white>{reason}</white>"
+  unmuted-target: "<green>Unmuted <white>{player}</white>."
+  not-muted: "<red>Player <white>{player}</white> is not muted."
+  blocked: "<red>You are muted and cannot chat."
+  usage-mute: "<gray>/mute <player> [duration] [reason]"
+  usage-unmute: "<gray>/unmute <player>"
+  permanent: "permanent"
+
+mention:
+  display: "<aqua>@{player}</aqua>"
+  display-all: "<gradient:#7ad0ff:#a98bff>@everyone</gradient>"
+  hover: "<gray>Click to reply to <white>{player}</white>"
+  notify: "<gradient:#7ad0ff:#a98bff>You were mentioned</gradient> <dark_gray>·</dark_gray> <gray>{channel}"
+  cooldown: "<red>Mention notifications are on cooldown."
+  all-cooldown: "<red>@all is on cooldown."
+  all-no-permission: "<red>You do not have permission to use @all."
+  toggled-on: "<green>Mention notifications enabled."
+  toggled-off: "<gray>Mention notifications disabled."
+
+display:
+  cooldown: "<red>Display is on cooldown (<white>{seconds}s</white>)."
+  no-item: "<red>You are not holding an item."
+  empty-inventory: "<gray>The inventory is empty."
+  empty-enderchest: "<gray>The ender chest is empty."
+  label-item: "[Item]"
+  label-inventory: "[Inventory]"
+  label-enderchest: "[Ender Chest]"
+  inventory-title: "<gray>{player}'s inventory"
+  enderchest-title: "<gray>{player}'s ender chest"
+  empty-slot: "<dark_gray>·"
+
+private:
+  sent: "<gray>You <dark_gray>→ <white>{target}</white><gray>: <white>{message}"
+  received: "<gray>{sender} <dark_gray>→ <white>You</white><gray>: <white>{message}"
+  spy: "<dark_gray>[PM] <gray>{sender} <dark_gray>→ <white>{target}</white><gray>: <white>{message}"
+  no-reply: "<red>There is nobody to reply to."
+  target-offline: "<red>Player <white>{target}</white> is not online."
+  ambiguous: "<red>Multiple players share the name <white>{target}</white> across servers; recipient is ambiguous, message cancelled."
+  self: "<red>You cannot message yourself."
+  spy-on: "<green>Private message spy enabled."
+  spy-off: "<gray>Private message spy disabled."
+  usage-msg: "<gray>/msg <player> <message>"
+  usage-reply: "<gray>/reply <message>"
+
+who:
+  requesting: "<gray>Querying cross-server players..."
+  header: "<gradient:#7ad0ff:#a98bff>Cross-server players</gradient> <dark_gray>·</dark_gray> <gray><white>{count}</white> online"
+  server-line: "<aqua>{server}</aqua> <dark_gray>({count})</dark_gray> <dark_gray>»</dark_gray> <white>{players}"
+  none: "<gray>No players found on other servers."
+  disabled: "<red>Cross-server is not enabled."
+
+log:
+  usage: "<gray>/mchat log <player|keyword> [page]"
+  header: "<gradient:#7ad0ff:#a98bff>Chat log</gradient> <dark_gray>·</dark_gray> <gray>query <white>{query}</white> <dark_gray>·</dark_gray> <gray>page <white>{page}</white>"
+  entry: "<dark_gray>[{time}] <gray>{channel} <white>{sender}</white><dark_gray>: <gray>{message}"
+  none: "<gray>No matching chat records found."

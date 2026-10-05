@@ -1,0 +1,92 @@
+name: MikuChat
+version: '1.1.1'
+main: com.junxiex.mikuchat.MikuChat
+api-version: '26.2'
+authors: [JunXieX]
+description: Paper/Folia chat management plugin with Velocity cross-server support.
+
+# 命令不在此声明，统一走 Brigadier（LifecycleEvents.COMMANDS）注册
+dependencies:
+  server:
+    LuckPerms:
+      load: BEFORE
+      required: false
+      join-classpath: true
+    PlaceholderAPI:
+      load: BEFORE
+      required: false
+      join-classpath: true
+
+permissions:
+  mikuchat.admin:
+    description: 管理员权限，包含全部管理类权限
+    default: op
+    children:
+      mikuchat.command.reload: true
+      mikuchat.command.info: true
+      mikuchat.command.who: true
+      mikuchat.command.log: true
+      mikuchat.command.filter: true
+      mikuchat.mute: true
+      mikuchat.private.spy: true
+      mikuchat.bypass.filter: true
+      mikuchat.bypass.antispam: true
+      mikuchat.format.admin: true
+      mikuchat.mention.all: true
+      mikuchat.display.item: true
+      mikuchat.display.inventory: true
+      mikuchat.display.enderchest: true
+  mikuchat.command.reload:
+    description: 允许重载配置
+    default: op
+  mikuchat.command.info:
+    description: 查看运行信息
+    default: op
+  mikuchat.command.who:
+    description: 查看跨服在线玩家
+    default: true
+  mikuchat.command.log:
+    description: 查询聊天记录
+    default: op
+  mikuchat.command.filter:
+    description: 测试过滤结果
+    default: op
+  mikuchat.mute:
+    description: 禁言与解除禁言
+    default: op
+  mikuchat.private.spy:
+    description: 监听私聊
+    default: op
+  mikuchat.chat.color:
+    description: 使用基础颜色标签
+    default: true
+  mikuchat.chat.color.hex:
+    description: 使用十六进制颜色
+    default: op
+  mikuchat.chat.decoration:
+    description: 使用粗体/斜体等样式
+    default: true
+  mikuchat.chat.minimessage:
+    description: 使用完整 MiniMessage 标签（含 click / hover）
+    default: op
+  mikuchat.mention.all:
+    description: 使用 @all
+    default: op
+  mikuchat.display.item:
+    description: 使用 [item]
+    default: true
+  mikuchat.display.inventory:
+    description: 使用 [inv]
+    default: true
+  mikuchat.display.enderchest:
+    description: 使用 [ender]
+    default: true
+  mikuchat.bypass.filter:
+    description: 绕过屏蔽词与广告过滤
+    default: op
+  mikuchat.bypass.antispam:
+    description: 绕过防刷屏
+    default: op
+  mikuchat.format.admin:
+    description: 使用管理组聊天格式
+    default: op

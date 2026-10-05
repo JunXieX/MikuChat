@@ -1,0 +1,28 @@
+# 物品 / 背包 / 末影箱展示配置
+# 玩家在聊天中输入下列标记即可展示对应内容（大小写不敏感）
+
+tokens:
+  item:
+    - "[item]"
+    - "[i]"
+    - "[物品]"
+  inventory:
+    - "[inv]"
+    - "[inventory]"
+    - "[背包]"
+  enderchest:
+    - "[ender]"
+    - "[enderchest]"
+    - "[ec]"
+    - "[末影箱]"
+
+# 展示冷却（毫秒）
+cooldowns:
+  item-millis: 1000
+  inventory-millis: 3000
+  enderchest-millis: 3000
+
+permissions:
+  item: mikuchat.display.item
+  inventory: mikuchat.display.inventory
+  enderchest: mikuchat.display.enderchest

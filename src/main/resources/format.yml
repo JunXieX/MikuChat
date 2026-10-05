@@ -1,0 +1,35 @@
+# 聊天格式规则
+#
+# 匹配规则：按 priority 从高到低依次匹配，取第一条 channel / permission / world 全部满足的规则。
+#   动态值使用 %name%：%player% %displayname% %prefix% %suffix% %group% %world% %server%
+#   其余 %xxx% 交给 PlaceholderAPI 解析（如 %player_level%）。
+#   <message> 为消息正文占位，<channel> 为当前频道显示名占位。
+#   <...> 内为 MiniMessage 原生标签，用于样式与交互。
+
+rules:
+  # 管理组专属格式（示例）
+  admin:
+    id: admin
+    priority: 100
+    channel: "*"
+    permission: "mikuchat.format.admin"
+    world: "*"
+    format: "%prefix%%player%%suffix% <dark_gray>[<channel><dark_gray>] <dark_gray>»<white> <message>"
+
+  # 跨服频道格式
+  global:
+    id: global
+    priority: 50
+    channel: "global"
+    permission: ""
+    world: "*"
+    format: "<dark_gray>[<channel><dark_gray>] %prefix%%player%%suffix% <dark_gray>»<white> <message>"
+
+  # 默认格式
+  default:
+    id: default
+    priority: 0
+    channel: "*"
+    permission: ""
+    world: "*"
+    format: "%prefix%%player%%suffix% <dark_gray>[<channel><dark_gray>] <dark_gray>»<white> <message>"

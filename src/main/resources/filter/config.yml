@@ -1,0 +1,52 @@
+# 屏蔽词与广告检测配置
+#
+# 词库文件（同目录）：
+#   words.yml —— 主词库，随插件分发；支持「顶层序列 + 尾部配置键」写法：
+#                 - 词条
+#                 Ignored-Punctuations: [...]   参与匹配时忽略的字符
+#                 WhiteList: [...]              白名单短语（命中落在其内则放行）
+#                 Replacement: '*'              替换符
+#   words.txt —— 追加词库，一行一词，# 开头为注释（可选）
+
+default-profile: default
+
+# 拥有该权限的玩家不受过滤限制
+bypass-permission: mikuchat.bypass.filter
+
+# 匹配行为
+matching:
+  # 词条最小长度（归一化后）。过短的词条（尤其单字如 操/屌）会大量误伤正常聊天（操作、操场、体操…），
+  # 故默认跳过长度小于 2 的词条；设为 1 表示不跳过。
+  min-length: 2
+  # 仅对「纯 ASCII」词条做单词边界校验，避免 titor 命中 editor/monitor、sb 命中 has been 之类；
+  # 中文词条不受影响，仍为子串匹配。设为 false 则所有词条都按子串匹配（更严格但误伤更多）。
+  ascii-word-boundary: true
+
+# 归一化：用于对抗全角、空格、标点、大小写、重复字符等变形绕过
+# 注意：若 words.yml 中提供了 Ignored-Punctuations，则优先使用词表里的字符集。
+normalize:
+  full-width: true
+  lowercase: true
+  ignore-whitespace: true
+  collapse-repeats: true
+  ignore-chars: '!"#$%&()*+,-./:;<=>?@[\]^_`{|}~·～、。，！？；：（）【】《》「」『』—…'
+
+profiles:
+  default:
+    # 命中屏蔽词时的替换符（单字符会按原长度重复）
+    replacement: "*"
+    # true = 命中即整条拦截；false = 替换后照常发送
+    block-on-match: false
+    # 是否提示发送者
+    notify-sender: true
+    ad:
+      enabled: true
+      # 命中广告时是否整条拦截（false 则仅替换）
+      block: true
+      # 白名单：命中内容若包含以下任一字符串则放行
+      whitelist: []
+      patterns:
+        - '(?i)https?://\S+'
+        - '(?i)(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?![\w.])'
+        - '(?i)(?<![\w.])[a-z0-9][a-z0-9-]{1,62}\.(?:com|net|org|cn|io|me|cc|tv|xyz|top|vip|shop|club|online|site|info|gg|tk|ml|ga|gq|live|fun|pro|store|app|dev)(?:/\S*)?(?![\w.])'
+        - '(?i)(?:qq|vx|wx|微信|扣扣)\s*[:：]?\s*\d{5,12}'

@@ -1,0 +1,53 @@
+# 防刷屏配置
+# 采用「冷却 + 令牌桶高频 + 相似度 + 句内重复」四重检测，相似度使用有界预筛以控制开销。
+
+default-profile: default
+
+profiles:
+  default:
+    # 拥有该权限的玩家不受限制
+    bypass-permission: mikuchat.bypass.antispam
+
+    # 冷却：两条消息之间的最小间隔
+    cooldown:
+      enabled: true
+      millis: 2000
+
+    # 高频：令牌桶，period-millis 内最多 max-messages 条
+    throttle:
+      enabled: true
+      max-messages: 5
+      period-millis: 5000
+
+    # 相似度：与最近 window 条消息比较，先用 3-gram Jaccard 预筛，再按需做编辑距离
+    similarity:
+      enabled: true
+      threshold: 0.85
+      window: 5
+      min-length: 6
+
+    # 句内重复：整条消息由同一子串重复组成时判为刷屏
+    repetition:
+      enabled: true
+      min-repeat: 4
+      max-pattern-length: 8
+      whitelist:
+        - "哈"
+        - "呵"
+        - "嘿"
+        - "6"
+        - "9"
+        - "?"
+        - "？"
+        - "!"
+        - "！"
+        - "."
+        - "。"
+        - "~"
+        - "～"
+
+    actions:
+      # WARN = 拦截并提示发送者；IGNORE = 静默丢弃
+      mode: WARN
+      # 命中时是否通知在线管理员（mikuchat.admin）
+      notify-staff: false

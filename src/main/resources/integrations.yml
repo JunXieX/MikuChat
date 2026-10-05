@@ -1,0 +1,12 @@
+# LuckPerms / PlaceholderAPI 集成配置
+
+luckperms:
+  enabled: true
+  # 前缀/后缀的解析方式：legacy（& 或 § 颜色代码）或 minimessage
+  format: legacy
+  prefix-default: ""
+  suffix-default: ""
+  group-default: "default"
+
+placeholderapi:
+  enabled: true

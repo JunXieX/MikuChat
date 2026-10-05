@@ -1,0 +1,13 @@
+# 样式权限净化
+# 默认把玩家消息中的 <...> 全部转义为纯文本，再按下列权限逐类放行。
+escape-by-default: true
+
+permissions:
+  # 基础命名颜色：<red> <gold> 等
+  color-named: mikuchat.chat.color
+  # 十六进制颜色：<#ff0000>
+  color-hex: mikuchat.chat.color.hex
+  # 样式：<bold> <italic> <underlined> <strikethrough> <obfuscated>
+  decoration: mikuchat.chat.decoration
+  # 高级标签：<gradient> <click> <hover> <font> 等，放行即等同于完整 MiniMessage 权限
+  advanced: mikuchat.chat.minimessage

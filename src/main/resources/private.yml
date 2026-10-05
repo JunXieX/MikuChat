@@ -1,0 +1,32 @@
+# 私聊配置
+
+# 消息格式：{sender} 发送者，{target} 接收者，{message} 正文
+formats:
+  sender: "<gray>你 <dark_gray>→ <white>{target}</white><gray>：<message>"
+  receiver: "<gray>{sender} <dark_gray>→ <white>你</white><gray>：<message>"
+  spy: "<dark_gray>[私聊] <gray>{sender} <dark_gray>→ <white>{target}</white><gray>：<message>"
+
+# 跨服私聊等待对方服务器确认的超时（毫秒），超时提示对方不在线
+delivery-timeout-millis: 1500
+
+# 单条私聊内容长度上限（字符），超出部分截断
+message-max-length: 256
+
+# 目标不在本服时的处理：先探测其所在服务器，再定向投递，
+# 避免离线模式下同名玩家在多台服务器被重复投递；探测超时同样由 network.yml 的
+# presence-timeout-millis 控制。若同名玩家在多台服务器同时在线，则取消发送并提示发送者。
+
+permissions:
+  spy: mikuchat.private.spy
+
+# 私聊留档：写入 data/private-logs/yyyy-MM-dd.log
+log:
+  enabled: true
+  # 记录行格式：{time} 时间，{sender} 发送者，{target} 接收者，{message} 内容
+  format: "[{time}] {sender} -> {target}: {message}"
+  time-format: "yyyy-MM-dd HH:mm:ss"
+  file-date-format: "yyyy-MM-dd"
+  # 是否记录跨服私聊（在接收端服务器记录）
+  cross-server: true
+  # 留档保留天数，超期文件会在启动/重载时自动删除；设为 0 表示永久保留
+  retention-days: 30

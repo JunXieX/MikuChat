@@ -1,0 +1,10 @@
+# 跨服频道：消息经 Velocity 代理端转发到其它服务器
+id: global
+display-name: "<gradient:#7ad0ff:#a98bff>跨服</gradient>"
+scope: NETWORK
+# 使用该频道所需权限，留空表示所有人可用
+permission: ""
+format: global
+antispam: default
+filter: default
+log: true

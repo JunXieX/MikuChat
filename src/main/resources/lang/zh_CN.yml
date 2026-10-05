@@ -1,0 +1,101 @@
+# MikuChat 简体中文文案（MiniMessage 语法）
+# 占位符使用 {name} 形式，由插件在运行时替换。
+
+generic:
+  no-permission: "<red>你没有权限执行此操作。"
+  player-not-found: "<red>找不到玩家 <white>{player}</white>。"
+  player-only: "<red>该命令只能由玩家执行。"
+  invalid-number: "<red>无效的数字：<white>{value}</white>。"
+  reloaded: "<green>配置已重载。"
+  reloaded-module: "<green>模块 <white>{module}</white> 已重载。"
+  module-not-found: "<red>找不到模块 <white>{module}</white>。"
+  unknown-command: "<red>未知子命令，输入 <white>/mchat help</white> 查看帮助。"
+  cooldown-command: "<red>操作过于频繁，请等待 <white>{seconds}s</white> 后再试。"
+
+command:
+  help-header: "<gradient:#7ad0ff:#a98bff>MikuChat</gradient> <dark_gray>·</dark_gray> <gray>命令帮助"
+  help-line: "<click:suggest_command:'{command}'><hover:show_text:'{description}'><white>{usage}</white></hover></click> <dark_gray>-</dark_gray> <gray>{description}"
+  info-header: "<gradient:#7ad0ff:#a98bff>MikuChat</gradient> <dark_gray>·</dark_gray> <gray>运行信息"
+  info-line: "<gray>{key}<dark_gray>: <white>{value}"
+
+channel:
+  switched: "<green>已切换到频道 <white>{channel}</white>。</green>"
+  not-found: "<red>找不到频道 <white>{channel}</white>。"
+  trigger-empty: "<red>符号 <white>{symbol}</white> 后面没有内容。"
+  no-permission: "<red>你没有权限使用频道 <white>{channel}</white>。"
+  disabled: "<red>频道 <white>{channel}</white> 当前不可用。"
+  already: "<gray>你已经在频道 <white>{channel}</white>。"
+  list-header: "<gray>可用频道："
+  list-line: "<hover:show_text:'{description}'><click:run_command:'/mchat channel {id}'><white>{id}</white></click></hover> <dark_gray>·</dark_gray> <gray>{display}"
+
+filter:
+  replaced: "<yellow>你的消息包含违禁词，已自动替换。</yellow>"
+  blocked: "<red>你的消息包含违禁内容，已被拦截。</red>"
+  ad-blocked: "<red>请勿发送广告或链接。</red>"
+
+antispam:
+  cooldown: "<red>发送太快了，请等待 <white>{seconds}s</white> 后再试。"
+  throttle: "<red>你发送消息过于频繁，请稍后再试。"
+  similar: "<red>请勿重复发送相似内容。"
+  repeat: "<red>请勿刷屏。"
+  ignored: "<red>你的消息已被忽略。"
+  staff-notify: "<gray>玩家 <white>{player}</white> 触发了防刷屏规则 <white>{type}</white>。"
+
+mute:
+  muted-you: "<red>你已被禁言。<gray>原因：<white>{reason}</white> <gray>剩余：<white>{duration}</white>"
+  muted-target: "<green>已禁言 <white>{player}</white>。<gray>时长：<white>{duration}</white> <gray>原因：<white>{reason}</white>"
+  unmuted-target: "<green>已解除 <white>{player}</white> 的禁言。"
+  not-muted: "<red>玩家 <white>{player}</white> 未被禁言。"
+  blocked: "<red>你已被禁言，无法发言。"
+  usage-mute: "<gray>/mute <玩家> [时长] [原因]"
+  usage-unmute: "<gray>/unmute <玩家>"
+  permanent: "永久"
+
+mention:
+  display: "<aqua>@{player}</aqua>"
+  display-all: "<gradient:#7ad0ff:#a98bff>@全体</gradient>"
+  hover: "<gray>点击回复 <white>{player}</white>"
+  notify: "<gradient:#7ad0ff:#a98bff>有人@了你</gradient> <dark_gray>·</dark_gray> <gray>{channel} 频道"
+  cooldown: "<red>@ 提醒太频繁，请稍后再试。"
+  all-cooldown: "<red>@all 冷却中，请稍后再试。"
+  all-no-permission: "<red>你没有权限使用 @all。"
+  toggled-on: "<green>已开启 @ 提醒。"
+  toggled-off: "<gray>已关闭 @ 提醒。"
+
+display:
+  cooldown: "<red>展示功能冷却中，请稍后再试（<white>{seconds}s</white>）。"
+  no-item: "<red>你手上没有可展示的物品。"
+  empty-inventory: "<gray>背包是空的。"
+  empty-enderchest: "<gray>末影箱是空的。"
+  label-item: "[物品]"
+  label-inventory: "[背包]"
+  label-enderchest: "[末影箱]"
+  inventory-title: "<gray>{player} 的背包"
+  enderchest-title: "<gray>{player} 的末影箱"
+  empty-slot: "<dark_gray>·"
+
+private:
+  sent: "<gray>你 <dark_gray>→ <white>{target}</white><gray>：<white>{message}"
+  received: "<gray>{sender} <dark_gray>→ <white>你</white><gray>：<white>{message}"
+  spy: "<dark_gray>[私聊] <gray>{sender} <dark_gray>→ <white>{target}</white><gray>：<white>{message}"
+  no-reply: "<red>没有可以回复的对象。"
+  target-offline: "<red>玩家 <white>{target}</white> 不在线。"
+  ambiguous: "<red>多名玩家同时使用名称 <white>{target}</white>（分布在多台服务器），无法确定收件人，已取消发送。"
+  self: "<red>你不能给自己发送私聊。"
+  spy-on: "<green>已开启私聊监听。"
+  spy-off: "<gray>已关闭私聊监听。"
+  usage-msg: "<gray>/msg <玩家> <内容>"
+  usage-reply: "<gray>/reply <内容>"
+
+who:
+  requesting: "<gray>正在查询跨服在线玩家…"
+  header: "<gradient:#7ad0ff:#a98bff>跨服在线</gradient> <dark_gray>·</dark_gray> <gray>共 <white>{count}</white> 人"
+  server-line: "<aqua>{server}</aqua> <dark_gray>({count})</dark_gray> <dark_gray>»</dark_gray> <white>{players}"
+  none: "<gray>当前没有查询到其它服务器的在线玩家。"
+  disabled: "<red>跨服功能未启用。"
+
+log:
+  usage: "<gray>/mchat log <玩家|关键词> [页码]"
+  header: "<gradient:#7ad0ff:#a98bff>聊天记录</gradient> <dark_gray>·</dark_gray> <gray>关键词 <white>{query}</white> <dark_gray>·</dark_gray> <gray>第 <white>{page}</white> 页"
+  entry: "<dark_gray>[{time}] <gray>{channel} <white>{sender}</white><dark_gray>: <gray>{message}"
+  none: "<gray>没有找到匹配的聊天记录。"

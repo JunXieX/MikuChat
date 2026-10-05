@@ -1,0 +1,18 @@
+# 公开聊天留档与查询
+
+enabled: true
+
+# 记录行格式：{time} 时间，{channel} 频道 id，{sender} 发送者，{message} 内容
+format: "[{time}] [{channel}] {sender}: {message}"
+time-format: "yyyy-MM-dd HH:mm:ss"
+file-date-format: "yyyy-MM-dd"
+
+# 留档目录（相对插件数据目录）
+directory: "data/chat-logs"
+
+# /mchat log 查询：最多向上回溯的天数与单次返回条数上限
+search-days: 7
+search-limit: 200
+
+# 留档保留天数，超期文件会在启动/重载时自动删除；设为 0 表示永久保留
+retention-days: 30

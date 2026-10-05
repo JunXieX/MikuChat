@@ -1,0 +1,21 @@
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 运行期产物
+run/
+logs/

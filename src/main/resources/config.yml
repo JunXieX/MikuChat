@@ -1,0 +1,14 @@
+# MikuChat 核心配置
+# 各功能的详细配置分散在独立文件中，本文件只保留全局项。
+
+# 跨服唯一标识：必须与 Velocity 中注册的服务器名完全一致，且每台服务器不同（如 lobby / survival / skyblock）
+server-id: "server-1"
+
+# 语言文件（对应 lang/<code>.yml）
+language: zh_CN
+
+# 玩家未选择频道时使用的默认频道 id
+default-channel: "local"
+
+# 调试日志
+debug: false
