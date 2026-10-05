@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.junxiex"
-version = "1.2.0"
+version = "1.2.1"
 description = "MikuChat - Paper/Folia chat management plugin with Velocity cross-server support"
 
 subprojects {

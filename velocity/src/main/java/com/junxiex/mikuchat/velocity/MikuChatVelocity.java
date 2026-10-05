@@ -27,14 +27,11 @@ import java.nio.file.Path;
 @Plugin(
         id = "mikuchat",
         name = "MikuChat",
-        version = "1.2.0",
+        version = "1.2.1",
         description = "Velocity 端跨服转发与共享状态保管（配合后端 MikuChat）",
         authors = {"JunXieX"}
 )
 public final class MikuChatVelocity {
-
-    /** 与后端 network.yml 的 channel 一致。 */
-    public static final String CHANNEL = "mikuchat:proxy";
 
     private final ProxyServer proxy;
     private final Logger logger;
@@ -45,21 +42,26 @@ public final class MikuChatVelocity {
     public MikuChatVelocity(ProxyServer proxy, Logger logger, @DataDirectory Path injectedDataDirectory) {
         this.proxy = proxy;
         this.logger = logger;
-        // @DataDirectory 注入的是 plugins/<插件id>（全小写），这里改用插件显示名，
-        // 与其它 Miku* 代理端插件的目录约定保持一致。
+        // @DataDirectory 注入的是 plugins/<插件id>（全小写 mikuchat）。这里改用插件显示名，
+        // 与其它 Miku* 代理端插件的目录约定（plugins/MikuMsg、plugins/MikuAuth 等）保持一致：
+        // Linux 区分大小写，两套目录名会让人误以为配置丢失；Windows 不区分，实际是同一目录。
         this.dataDirectory = injectedDataDirectory.getParent().resolve("MikuChat");
     }
 
     @Subscribe
     public void onInitialize(ProxyInitializeEvent event) {
-        MinecraftChannelIdentifier channel = MinecraftChannelIdentifier.from(CHANNEL);
+        // 首次加载会创建 plugins/MikuChat/ 并写出默认 config.yml
+        VelocityConfig config = new VelocityConfig(dataDirectory, logger);
+        config.load();
+
+        MinecraftChannelIdentifier channel = MinecraftChannelIdentifier.from(config.channel());
         proxy.getChannelRegistrar().register(channel);
 
         this.store = new SharedStore(dataDirectory, logger);
         this.store.load();
 
-        proxy.getEventManager().register(this, new ProxyBridge(proxy, logger, channel, store));
-        logger.info("MikuChat (Velocity) 已启用，跨服通道 {} 就绪。", CHANNEL);
+        proxy.getEventManager().register(this, new ProxyBridge(proxy, logger, channel, store, config.debug()));
+        logger.info("MikuChat (Velocity) 已启用，跨服通道 {} 就绪。", channel.getId());
     }
 
     @Subscribe

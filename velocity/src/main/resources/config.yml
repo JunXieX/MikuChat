@@ -1,0 +1,9 @@
+# MikuChat (Velocity) 配置
+# 本文件位于 plugins/MikuChat/，首次加载时自动生成。
+
+# 插件消息通道名，必须与后端 plugins/MikuChat/network.yml 的 channel 完全相同。
+# 两端不一致会导致跨服聊天、跨服私聊、禁言同步全部失效。
+channel: "mikuchat:proxy"
+
+# 调试日志：开启后输出跨服转发的诊断信息（例如目标服务器当前无可用连接）。
+debug: false

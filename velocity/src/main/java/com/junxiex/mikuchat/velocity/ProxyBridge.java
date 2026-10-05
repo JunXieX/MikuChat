@@ -42,13 +42,16 @@ public final class ProxyBridge {
     private final Logger logger;
     private final MinecraftChannelIdentifier channel;
     private final SharedStore store;
+    private final boolean debug;
     private final Gson gson = new Gson();
 
-    public ProxyBridge(ProxyServer proxy, Logger logger, MinecraftChannelIdentifier channel, SharedStore store) {
+    public ProxyBridge(ProxyServer proxy, Logger logger, MinecraftChannelIdentifier channel, SharedStore store,
+                       boolean debug) {
         this.proxy = proxy;
         this.logger = logger;
         this.channel = channel;
         this.store = store;
+        this.debug = debug;
     }
 
     @Subscribe
@@ -119,8 +122,8 @@ public final class ProxyBridge {
             if (server.getServerInfo().getName().equals(originName)) {
                 continue;
             }
-            if (!server.sendPluginMessage(channel, data)) {
-                logger.debug("服务器 {} 无可用连接，跨服消息未送达。", server.getServerInfo().getName());
+            if (!server.sendPluginMessage(channel, data) && debug) {
+                logger.info("服务器 {} 无可用连接，跨服消息未送达。", server.getServerInfo().getName());
             }
         }
     }
@@ -132,8 +135,8 @@ public final class ProxyBridge {
         envelope.addProperty("id", UUID.randomUUID().toString());
         envelope.addProperty("ts", System.currentTimeMillis());
         envelope.add("data", payload);
-        if (!server.sendPluginMessage(channel, gson.toJson(envelope).getBytes(StandardCharsets.UTF_8))) {
-            logger.debug("服务器 {} 无可用连接，{} 未送达。", server.getServerInfo().getName(), type);
+        if (!server.sendPluginMessage(channel, gson.toJson(envelope).getBytes(StandardCharsets.UTF_8)) && debug) {
+            logger.info("服务器 {} 无可用连接，{} 未送达。", server.getServerInfo().getName(), type);
         }
     }
 

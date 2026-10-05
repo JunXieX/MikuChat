@@ -1,5 +1,5 @@
 name: MikuChat
-version: '1.2.0'
+version: '1.2.1'
 main: com.junxiex.mikuchat.MikuChat
 api-version: '26.2'
 authors: [JunXieX]
