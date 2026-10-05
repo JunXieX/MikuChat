@@ -27,7 +27,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "mikuchat",
         name = "MikuChat",
-        version = "1.1.1",
+        version = "1.2.0",
         description = "Velocity 端跨服转发与共享状态保管（配合后端 MikuChat）",
         authors = {"JunXieX"}
 )
