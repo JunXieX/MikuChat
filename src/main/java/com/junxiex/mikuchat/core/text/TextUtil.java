@@ -3,6 +3,7 @@ package com.junxiex.mikuchat.core.text;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 /**
@@ -13,12 +14,28 @@ public final class TextUtil {
     private static final MiniMessage MINI = MiniMessage.miniMessage();
     private static final GsonComponentSerializer GSON = GsonComponentSerializer.gson();
     private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
+    private static final LegacyComponentSerializer LEGACY_AMPERSAND = LegacyComponentSerializer.legacyAmpersand();
+    private static final LegacyComponentSerializer LEGACY_SECTION = LegacyComponentSerializer.legacySection();
 
     private TextUtil() {
     }
 
     public static MiniMessage mini() {
         return MINI;
+    }
+
+    /**
+     * 解析 legacy 颜色代码文本（如 LuckPerms 前缀、PlaceholderAPI 变量返回值）。
+     *
+     * <p>必须按文本实际使用的符号选择序列化器：两种序列化器互不认识对方的符号，
+     * 用错会把色码当作普通文字保留在组件中——游戏内因客户端自行渲染 {@code §} 看似正常，
+     * 控制台则会原样打印出 {@code §b} 这类字符。</p>
+     */
+    public static Component legacy(String text) {
+        if (text == null || text.isEmpty()) {
+            return Component.empty();
+        }
+        return (text.indexOf('§') >= 0 ? LEGACY_SECTION : LEGACY_AMPERSAND).deserialize(text);
     }
 
     public static Component parse(String miniMessage) {

@@ -5,7 +5,6 @@ import com.junxiex.mikuchat.core.config.ConfigFile;
 import com.junxiex.mikuchat.core.text.MetaBridge;
 import com.junxiex.mikuchat.core.text.TextUtil;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.luckperms.api.LuckPerms;
 import net.luckperms.api.LuckPermsProvider;
 import net.luckperms.api.cacheddata.CachedMetaData;
@@ -14,15 +13,10 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
-import java.util.Locale;
-
 /**
  * LuckPerms 与 PlaceholderAPI 的软依赖接入。插件缺失时自动降级为默认值，不影响主流程。
  */
 public final class Integrations implements MetaBridge {
-
-    private static final LegacyComponentSerializer LEGACY_AMP = LegacyComponentSerializer.legacyAmpersand();
-    private static final LegacyComponentSerializer LEGACY_SECTION = LegacyComponentSerializer.legacySection();
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -141,10 +135,6 @@ public final class Integrations implements MetaBridge {
         if (miniMessageMeta) {
             return TextUtil.parse(raw);
         }
-        String value = raw.toLowerCase(Locale.ROOT);
-        if (value.indexOf('§') >= 0) {
-            return LEGACY_SECTION.deserialize(raw);
-        }
-        return LEGACY_AMP.deserialize(raw);
+        return TextUtil.legacy(raw);
     }
 }

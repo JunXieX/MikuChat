@@ -3,7 +3,6 @@ package com.junxiex.mikuchat.core.text;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.entity.Player;
 
 import java.util.LinkedHashMap;
@@ -26,7 +25,6 @@ import java.util.regex.Pattern;
 public final class TemplateRenderer {
 
     private static final Pattern TOKEN = Pattern.compile("%([^%\\s]+)%");
-    private static final LegacyComponentSerializer LEGACY = LegacyComponentSerializer.legacyAmpersand();
 
     private final MetaBridge bridge;
     private final Supplier<String> serverId;
@@ -83,6 +81,6 @@ public final class TemplateRenderer {
         if (raw == null || raw.isEmpty()) {
             return Component.empty();
         }
-        return LEGACY.deserialize(raw);
+        return TextUtil.legacy(raw);
     }
 }
