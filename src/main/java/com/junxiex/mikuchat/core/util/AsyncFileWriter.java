@@ -26,7 +26,7 @@ public final class AsyncFileWriter {
 
     private final MikuChat plugin;
     private final Map<Path, BufferedWriter> writers = new HashMap<>();
-    private volatile boolean closed;
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "MikuChat-FileWriter");
         thread.setDaemon(true);
@@ -38,7 +38,7 @@ public final class AsyncFileWriter {
     }
 
     public void append(Path path, String line) {
-        if (closed) {
+        if (closed.get()) {
             return;
         }
         try {
@@ -83,9 +83,12 @@ public final class AsyncFileWriter {
     }
 
     public void shutdown() {
+        // 幂等：重复调用（例如插件停用后又触发一次清理）不应抛出 RejectedExecutionException
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         // 先置关闭标记（丢弃关闭后的迟到写入），再排队关闭任务：
         // 单线程执行器保证关闭任务排在所有已提交写入之后
-        closed = true;
         executor.execute(this::closeAll);
         executor.shutdown();
         try {

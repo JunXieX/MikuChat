@@ -163,7 +163,8 @@ public final class DisplayManager implements ChatTokenHandler {
         Component name = stack.displayName();
         String plain = TextUtil.plain(name);
         if (plain.length() > 5) {
-            name = Component.text(plain.substring(0, 5));
+            // 用支持代理对的截断，避免把 emoji（物品自定义名常见）从中间切断产生非法字符
+            name = Component.text(TextUtil.truncate(plain, 5));
         }
         if (stack.getAmount() > 1) {
             name = name.append(Component.text("x" + stack.getAmount()));

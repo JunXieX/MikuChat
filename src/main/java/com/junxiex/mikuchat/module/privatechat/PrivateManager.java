@@ -235,12 +235,15 @@ public final class PrivateManager {
             plugin.debug("解析跨服私聊失败: " + t.getMessage());
             return;
         }
-        // 跨服内容来自信任边界之外：限制体积并拒绝可交互组件（click/hover），
-        // 防止被攻陷的对端借私聊向本服玩家注入点击执行指令等恶意组件
-        if (packet.receiverLine().length() > MAX_REMOTE_LINE_LENGTH || containsInteractive(receiverLine)) {
-            plugin.debug("丢弃可疑的跨服私聊组件: " + packet.senderName());
+        // 跨服内容来自信任边界之外：限制体积，并剥离组件中的 click / hover 交互事件，
+        // 防止被攻陷的对端借私聊向本服玩家注入点击执行指令等恶意组件。
+        // 注意这里只剥离、不丢弃：@ 提醒与 [item] 展示本身就会带上交互事件，
+        // 若整条丢弃，含这些标记的跨服私聊会静默消失、双方都收不到任何提示。
+        if (packet.receiverLine().length() > MAX_REMOTE_LINE_LENGTH) {
+            plugin.debug("丢弃体积异常的跨服私聊组件: " + packet.senderName());
             return;
         }
+        receiverLine = stripInteractive(receiverLine);
         plugin.scheduler().atEntity(target, () -> target.sendMessage(receiverLine));
         dispatchSpy(receiverLine, packet.senderId());
         notifyMentions(packet.senderId(), null);
@@ -329,17 +332,15 @@ public final class PrivateManager {
         return null;
     }
 
-    /** 递归检查组件树是否含 click / hover 交互事件。 */
-    private boolean containsInteractive(Component component) {
-        if (component.style().clickEvent() != null || component.style().hoverEvent() != null) {
-            return true;
+    /** 递归剥离组件树中的 click / hover 交互事件，保留文本内容与颜色样式。 */
+    private Component stripInteractive(Component component) {
+        // style(...) 只替换样式，保留该组件自身的文本内容与子组件
+        Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
+        List<Component> children = component.children();
+        if (children.isEmpty()) {
+            return result;
         }
-        for (Component child : component.children()) {
-            if (containsInteractive(child)) {
-                return true;
-            }
-        }
-        return false;
+        return result.children(children.stream().map(this::stripInteractive).toList());
     }
 
     public String replyTarget(Player player) {

@@ -87,24 +87,30 @@ public final class MikuChat extends JavaPlugin implements Listener {
     }
 
     private void registerModules() {
-        // 单个模块构造/启用失败不应导致整个插件无法加载
+        // 单个模块构造失败不应导致后续模块全部丢失，因此逐一注册、逐一兜底。
+        // 注册顺序即启用顺序，有依赖关系的模块（如 format 依赖 integration 提供的渲染器）必须靠前。
+        registerModule("integration", () -> new com.junxiex.mikuchat.module.integration.IntegrationModule(this));
+        registerModule("style", () -> new com.junxiex.mikuchat.module.style.StyleModule(this));
+        registerModule("channel", () -> new com.junxiex.mikuchat.module.channel.ChannelModule(this));
+        registerModule("format", () -> new com.junxiex.mikuchat.module.format.FormatModule(this));
+        registerModule("filter", () -> new com.junxiex.mikuchat.module.filter.FilterModule(this));
+        registerModule("antispam", () -> new com.junxiex.mikuchat.module.antispam.AntiSpamModule(this));
+        registerModule("network", () -> new com.junxiex.mikuchat.module.network.VelocityNetworkModule(this));
+        registerModule("mute", () -> new com.junxiex.mikuchat.module.mute.MuteModule(this));
+        registerModule("display", () -> new com.junxiex.mikuchat.module.display.DisplayModule(this));
+        registerModule("mention", () -> new com.junxiex.mikuchat.module.mention.MentionModule(this));
+        registerModule("logging", () -> new com.junxiex.mikuchat.module.logging.LoggingModule(this));
+        registerModule("chat", () -> new com.junxiex.mikuchat.module.chat.ChatPipelineModule(this));
+        registerModule("private", () -> new com.junxiex.mikuchat.module.privatechat.PrivateModule(this));
+        registerModule("command", () -> new com.junxiex.mikuchat.module.command.CommandModule(this));
+    }
+
+    /** 构造并登记单个模块；失败时只报告该模块并继续，不影响其余模块。 */
+    private void registerModule(String id, java.util.function.Supplier<com.junxiex.mikuchat.core.module.ChatModule> factory) {
         try {
-            moduleManager.register(new com.junxiex.mikuchat.module.integration.IntegrationModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.style.StyleModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.channel.ChannelModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.format.FormatModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.filter.FilterModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.antispam.AntiSpamModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.network.VelocityNetworkModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.mute.MuteModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.display.DisplayModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.mention.MentionModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.logging.LoggingModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.chat.ChatPipelineModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.privatechat.PrivateModule(this));
-            moduleManager.register(new com.junxiex.mikuchat.module.command.CommandModule(this));
+            moduleManager.register(factory.get());
         } catch (Throwable t) {
-            getLogger().severe("模块注册失败，插件功能将不完整: " + t);
+            getLogger().severe("模块 " + id + " 注册失败，该模块功能将不可用: " + t);
         }
     }
 

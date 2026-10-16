@@ -111,7 +111,8 @@ public final class UserDataStore implements AutoCloseable {
             for (Map.Entry<String, Object> entry : values.entrySet()) {
                 yaml.set(entry.getKey(), entry.getValue());
             }
-            yaml.save(file(uuid));
+            // 原子替换，避免服务器在写入途中退出时留下半截文件（会导致该玩家数据整体丢失）
+            com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file(uuid));
         } catch (Exception e) {
             plugin.getLogger().warning("保存玩家数据失败 " + uuid + ": " + e.getMessage());
         }

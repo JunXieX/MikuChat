@@ -240,7 +240,7 @@ public final class MuteManager implements MuteService {
                     ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
             yaml.set("mutes." + uuid, value);
             try {
-                yaml.save(file);
+                com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);
             } catch (Exception e) {
                 plugin.getLogger().warning("保存 mute.yml 失败: " + e.getMessage());
             }
@@ -264,9 +264,17 @@ public final class MuteManager implements MuteService {
         }
     }
 
-    /** 关闭本地回落文件的写入线程，供模块停用时调用。 */
+    /** 关闭本地回落文件的写入线程，供模块停用时调用。等待已排队的写入落盘，避免停服瞬间丢数据。 */
     public void shutdown() {
         localFileExecutor.shutdown();
+        try {
+            if (!localFileExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                localFileExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            localFileExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     public void subscribe() {

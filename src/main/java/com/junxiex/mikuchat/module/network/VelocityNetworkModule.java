@@ -137,7 +137,14 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         }
         org.bukkit.event.HandlerList.unregisterAll(this);
         carrierId = null;
+        // 停用/重载时若有查询仍在等待应答，代理不会再回包：立即以空快照回调，
+        // 否则调用方（/mchat who、跨服私聊探测）会一直停留在「正在查询」状态。
+        // 先整体取出再回调：回调本身可能重新发起查询，边遍历边清空会漏掉或误丢那一条。
+        List<Consumer<Presence>> stalled = new ArrayList<>(pendingPresence.values());
         pendingPresence.clear();
+        for (Consumer<Presence> callback : stalled) {
+            callback.accept(new Presence(Map.of()));
+        }
         synchronized (outbound) {
             outbound.clear();
         }
