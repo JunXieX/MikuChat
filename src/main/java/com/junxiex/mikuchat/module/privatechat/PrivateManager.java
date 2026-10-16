@@ -243,9 +243,9 @@ public final class PrivateManager {
             plugin.debug("丢弃体积异常的跨服私聊组件: " + packet.senderName());
             return;
         }
-        receiverLine = stripInteractive(receiverLine);
-        plugin.scheduler().atEntity(target, () -> target.sendMessage(receiverLine));
-        dispatchSpy(receiverLine, packet.senderId());
+        final Component safeLine = stripInteractive(receiverLine);
+        plugin.scheduler().atEntity(target, () -> target.sendMessage(safeLine));
+        dispatchSpy(safeLine, packet.senderId());
         notifyMentions(packet.senderId(), null);
         log(packet.senderName(), target.getName(), packet.rawText(), true);
         plugin.services().find(NetworkService.class)
