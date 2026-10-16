@@ -114,7 +114,11 @@ public final class ChannelManager implements ChannelService {
             Map<String, String> placeholders = new java.util.HashMap<>();
             placeholders.put("id", channel.id());
             placeholders.put("display", channel.displayName());
-            placeholders.put("description", accessible ? channel.displayName() : plugin.lang().raw("channel.no-permission"));
+            // 无权限时用「无权限」文案作悬停说明。该文案本身带 {channel} 占位符，
+            // 这里必须一并替换，否则玩家悬停时会看到未替换的 {channel} 字面量。
+            placeholders.put("description", accessible
+                    ? channel.displayName()
+                    : plugin.lang().raw("channel.no-permission").replace("{channel}", channel.id()));
             var line = plugin.lang().parse(plugin.lang().raw("channel.list-line", placeholders));
             sender.sendMessage(line);
         }

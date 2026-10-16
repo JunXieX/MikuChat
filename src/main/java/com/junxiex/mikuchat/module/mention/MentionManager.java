@@ -31,7 +31,13 @@ public final class MentionManager implements ChatTokenHandler, MentionNotifier {
     private final Cooldowns cooldowns;
     private final com.junxiex.mikuchat.core.user.UserDataStore userData;
 
-    private volatile Pattern pattern = Pattern.compile("@([A-Za-z0-9_]{1,16})");
+    /**
+     * 默认匹配式：ASCII 用户名 + 中文别名（配置中的 {@code all-aliases} 含「全体」「所有人」等中文词，
+     * 若只匹配 {@code [A-Za-z0-9_]} 则这些别名永远无法触发）。
+     */
+    private static final String DEFAULT_PATTERN = "@([A-Za-z0-9_\\u4e00-\\u9fa5]{1,16})";
+
+    private volatile Pattern pattern = Pattern.compile(DEFAULT_PATTERN);
     private volatile Set<String> allAliases = Set.of("all");
     private volatile String allPermission = "mikuchat.mention.all";
     private volatile long senderAllCooldown = 30_000L;
@@ -51,11 +57,12 @@ public final class MentionManager implements ChatTokenHandler, MentionNotifier {
 
     public void load() {
         plugin.configManager().reload("mention.yml");
-        String raw = config.config().getString("pattern", "@([A-Za-z0-9_]{1,16})");
+        String raw = config.config().getString("pattern", DEFAULT_PATTERN);
         try {
             this.pattern = Pattern.compile(raw);
         } catch (Exception e) {
-            this.pattern = Pattern.compile("@([A-Za-z0-9_]{1,16})");
+            plugin.getLogger().warning("mention.yml 的 pattern 非法，已回落到默认匹配式: " + e.getMessage());
+            this.pattern = Pattern.compile(DEFAULT_PATTERN);
         }
         Set<String> aliases = new HashSet<>();
         for (String alias : config.config().getStringList("all-aliases")) {

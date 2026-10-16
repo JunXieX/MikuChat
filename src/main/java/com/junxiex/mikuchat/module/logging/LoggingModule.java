@@ -45,6 +45,16 @@ public final class LoggingModule implements ChatModule, ChatLogService {
     @Override
     public void enable() {
         plugin.configManager().reload("chatlog.yml");
+        applyFormats();
+        plugin.services().register(ChatLogService.class, this);
+        plugin.services().register(LoggingModule.class, this);
+        int retentionDays = config.config().getInt("retention-days", 30);
+        plugin.scheduler().async(() -> com.junxiex.mikuchat.core.util.LogRetention.purge(
+                directory(), retentionDays, fileFormat, plugin.getLogger(), "聊天记录"));
+    }
+
+    /** 解析时间/日期格式。非法格式回落到内置默认，避免一条错误配置让记录整体不可用。 */
+    private void applyFormats() {
         try {
             timeFormat = DateTimeFormatter.ofPattern(config.config().getString("time-format", "yyyy-MM-dd HH:mm:ss"));
         } catch (Exception ignored) {
@@ -55,11 +65,6 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         } catch (Exception ignored) {
             fileFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd");
         }
-        plugin.services().register(ChatLogService.class, this);
-        plugin.services().register(LoggingModule.class, this);
-        int retentionDays = config.config().getInt("retention-days", 30);
-        plugin.scheduler().async(() -> com.junxiex.mikuchat.core.util.LogRetention.purge(
-                directory(), retentionDays, fileFormat, plugin.getLogger(), "聊天记录"));
     }
 
     @Override
@@ -71,6 +76,8 @@ public final class LoggingModule implements ChatModule, ChatLogService {
     @Override
     public void reload() {
         plugin.configManager().reload("chatlog.yml");
+        // 必须一并重解析格式：否则改完 chatlog.yml 的时间/日期格式要重启才生效
+        applyFormats();
     }
 
     @Override

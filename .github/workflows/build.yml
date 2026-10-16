@@ -22,6 +22,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 需要完整 tag 对象才能读到附注 tag 的正文（用于生成 Release 更新日志）
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up JDK 25
         uses: actions/setup-java@v4
@@ -48,20 +52,40 @@ jobs:
           chmod +x gradlew
           ./gradlew build --no-daemon
 
+      - name: Compute artifact name
+        id: artifact
+        run: |
+          # PR 构建时 github.ref_name 形如 "1/merge"，含斜杠会导致 artifact 名称非法
+          SAFE_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+          echo "name=MikuChat-${SAFE_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Upload jars
         uses: actions/upload-artifact@v4
         with:
-          name: MikuChat-${{ github.ref_name }}
+          name: ${{ steps.artifact.outputs.name }}
           if-no-files-found: error
           path: |
             build/libs/MikuChat-*.jar
             velocity/build/libs/MikuChat-Velocity-*.jar
 
+      - name: Extract release notes from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # 正式版更新日志取自附注 tag 的正文，保证与打 tag 时写入的说明完全一致
+          git tag -l --format='%(contents:body)' "${GITHUB_REF_NAME}" > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 未附带更新日志正文，请使用 git tag -a 并填写说明"
+            exit 1
+          fi
+          echo "----- release notes -----"
+          cat release-notes.md
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # 正式版以附注 tag 的正文作为结构化更新日志，不再使用自动生成的一段式说明
+          body_path: release-notes.md
           files: |
             build/libs/MikuChat-*.jar
             velocity/build/libs/MikuChat-Velocity-*.jar

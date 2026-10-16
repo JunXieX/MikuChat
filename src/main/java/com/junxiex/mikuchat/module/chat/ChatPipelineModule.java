@@ -194,19 +194,21 @@ public final class ChatPipelineModule implements ChatModule, Listener {
 
         raw = TextUtil.truncate(raw, config.config().getInt("message-max-length", 256));
 
-        MessageComposer.Composed composed = composer.compose(sender, channel, raw);
-        FormatService format = plugin.services().find(FormatService.class).orElse(null);
-        Component line = format == null ? composed.body() : format.render(sender, channel, composed.body());
-
         NetworkService network = plugin.services().find(NetworkService.class).orElse(null);
         boolean crossServer = channel.scope() == ChannelScope.NETWORK;
         boolean networkReady = network != null && network.available();
-        // 先决定是否投递，再做本服广播：避免 DROP 模式下消息已经发出却仍提示“频道不可用”
+        // 是否投递必须先于正文组装判定：组装会触发 [item]/@ 等处理器，这些处理器会消费冷却
+        // 并向玩家发送「冷却中/无物品」等提示。若先组装再因频道不可用而丢弃，玩家既损失了冷却
+        // 又收到与真实发送无关的提示。
         if (crossServer && !networkReady
                 && "DROP".equalsIgnoreCase(config.config().getString("network-unavailable-action", "LOCAL"))) {
             sender.sendMessage(plugin.lang().get("channel.disabled", "channel", channel.id()));
             return;
         }
+
+        MessageComposer.Composed composed = composer.compose(sender, channel, raw);
+        FormatService format = plugin.services().find(FormatService.class).orElse(null);
+        Component line = format == null ? composed.body() : format.render(sender, channel, composed.body());
 
         deliverLocal(viewers, line);
 

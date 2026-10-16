@@ -149,33 +149,51 @@ public final class AntiSpamManager implements AntiSpamService {
         return false;
     }
 
+    /**
+     * 句内重复检测：整条消息由同一子串重复组成时判为刷屏。
+     * <p>
+     * 判定基于「最小周期」而非逐个长度试除：白名单存的是重复单元（如 {@code ?}、{@code 哈}），
+     * 只有拿最小周期去比对白名单才能正确放行 {@code ????????} 这类消息。
+     * 早期逐长度试除的写法在重复次数 ≥ 2×min-repeat 时会退化到更长的周期
+     * （如 8 个问号会试到 {@code ??}），白名单里只有 {@code ?} 时反而误判为刷屏。
+     */
     private boolean isRepetition(String text, AntiSpamProfile profile) {
         String stripped = WHITESPACE.matcher(text).replaceAll("");
         int minRepeat = profile.repetitionMinRepeat();
         if (stripped.length() < minRepeat) {
             return false;
         }
-        int maxPattern = Math.min(profile.repetitionMaxPatternLength(), stripped.length() / minRepeat);
-        for (int length = 1; length <= maxPattern; length++) {
-            if (stripped.length() % length != 0) {
-                continue;
-            }
-            String pattern = stripped.substring(0, length);
-            if (profile.repetitionWhitelist().contains(pattern.toLowerCase(Locale.ROOT))) {
-                continue;
-            }
-            boolean repeated = true;
-            for (int i = length; i < stripped.length(); i += length) {
-                if (!stripped.regionMatches(0, stripped, i, length)) {
-                    repeated = false;
-                    break;
-                }
-            }
-            if (repeated) {
-                return true;
-            }
+        int period = minimalPeriod(stripped);
+        if (period >= stripped.length()) {
+            // 无重复结构
+            return false;
         }
-        return false;
+        if (stripped.length() / period < minRepeat) {
+            return false;
+        }
+        if (period > profile.repetitionMaxPatternLength()) {
+            return false;
+        }
+        return !profile.repetitionWhitelist().contains(stripped.substring(0, period).toLowerCase(Locale.ROOT));
+    }
+
+    /** 返回字符串的最小周期长度；无重复时返回字符串自身长度。 */
+    private int minimalPeriod(String text) {
+        int length = text.length();
+        // KMP 前缀函数：最长公共前后缀的长度
+        int[] prefix = new int[length];
+        for (int i = 1; i < length; i++) {
+            int j = prefix[i - 1];
+            while (j > 0 && text.charAt(i) != text.charAt(j)) {
+                j = prefix[j - 1];
+            }
+            if (text.charAt(i) == text.charAt(j)) {
+                j++;
+            }
+            prefix[i] = j;
+        }
+        int candidate = length - prefix[length - 1];
+        return length % candidate == 0 ? candidate : length;
     }
 
     private String normalize(String text) {
