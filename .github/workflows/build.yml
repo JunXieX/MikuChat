@@ -68,13 +68,15 @@ jobs:
             build/libs/MikuChat-*.jar
             velocity/build/libs/MikuChat-Velocity-*.jar
 
-      - name: Extract release notes from tag
+      - name: Extract release notes from release commit
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          # 正式版更新日志取自附注 tag 的正文，保证与打 tag 时写入的说明完全一致
-          git tag -l --format='%(contents:body)' "${GITHUB_REF_NAME}" > release-notes.md
+          # 更新日志取自「发版提交」的正文（不含标题行）：打 tag 前先提交一次带完整说明的发布提交，
+          # tag 指向该提交即可。注意不能用 `git tag --format='%(contents:body)'`——
+          # actions/checkout 会把 tag 落地为轻量引用，读出来的是提交正文而非 tag 附注。
+          git log -1 --format=%b "${GITHUB_REF_NAME}" > release-notes.md
           if [ ! -s release-notes.md ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} 未附带更新日志正文，请使用 git tag -a 并填写说明"
+            echo "::error::发版提交 ${GITHUB_REF_NAME} 未附带更新日志正文"
             exit 1
           fi
           echo "----- release notes -----"
@@ -84,7 +86,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # 正式版以附注 tag 的正文作为结构化更新日志，不再使用自动生成的一段式说明
+          # 使用发版提交正文作为结构化更新日志，不再使用自动生成的一段式说明
           body_path: release-notes.md
           files: |
             build/libs/MikuChat-*.jar
