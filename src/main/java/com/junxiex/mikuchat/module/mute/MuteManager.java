@@ -65,7 +65,13 @@ public final class MuteManager implements MuteService {
         }
     }
 
-    /** 代理端下发的全量共享状态：以代理端为准覆盖本地缓存。 */
+    /**
+     * 代理端下发的全量共享状态：以代理端为准覆盖本地缓存。
+     * <p>
+     * 代理端（{@code SharedStore}）既是唯一权威，也已落盘持久化，因此这里必须是「覆盖」而不是
+     * 「合并」：若保留本地存在但共享快照里没有的记录，那么在别的服务器解除禁言后，
+     * 本服从 {@code mute.yml} 恢复出来的旧记录会被永久保留，玩家将一直被误禁言。
+     */
     private void handleStateSync(String json) {
         try {
             com.google.gson.JsonObject object =
@@ -88,6 +94,7 @@ public final class MuteManager implements MuteService {
                     }
                 }
             }
+            // 代理端是唯一权威：直接覆盖，不做合并（原因见方法注释）
             cache.clear();
             cache.putAll(loaded);
             purgeExpired();
@@ -234,7 +241,7 @@ public final class MuteManager implements MuteService {
     }
 
     private void saveLocal(UUID uuid, String value) {
-        localFileExecutor.execute(() -> {
+        submitLocalWrite(() -> {
             File file = new File(plugin.getDataFolder(), "mute.yml");
             YamlConfiguration yaml = file.exists()
                     ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
@@ -245,6 +252,18 @@ public final class MuteManager implements MuteService {
                 plugin.getLogger().warning("保存 mute.yml 失败: " + e.getMessage());
             }
         });
+    }
+
+    /**
+     * 提交本地回落写入。停服瞬间执行器已 shutdown 时 execute 会抛 RejectedExecutionException，
+     * 该异常会顺着 /mute 的调用栈冒到命令线程，因此统一在此吞掉。
+     */
+    private void submitLocalWrite(Runnable task) {
+        try {
+            localFileExecutor.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // 插件正在停用，丢弃本次落盘请求
+        }
     }
 
     private void purgeExpired() {

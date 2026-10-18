@@ -26,13 +26,11 @@ public final class AtomicFiles {
      * @throws Exception 写入或替换失败时抛出，交由调用方记录日志
      */
     public static void saveYaml(YamlConfiguration yaml, File target) throws Exception {
-        Path path = target.toPath();
+        Path path = target.toPath().toAbsolutePath();
         Path parent = path.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
-        }
+        Files.createDirectories(parent);
         // 临时文件必须与目标同目录，跨文件系统的 move 无法保证原子性
-        Path temp = Files.createTempFile(parent, path.getFileName().toString(), ".tmp");
+        Path temp = Files.createTempFile(parent, prefixOf(path.getFileName().toString()), ".tmp");
         try {
             yaml.save(temp.toFile());
             try {
@@ -40,9 +38,18 @@ public final class AtomicFiles {
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 // 少数文件系统不支持原子 move，退化为普通替换（仍优于直接截断写入）
                 Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.FileSystemException e) {
+                // Windows 上目标文件被其它句柄短暂占用时，ATOMIC_MOVE 会抛 FileSystemException
+                // 而不是 AtomicMoveNotSupportedException；此时退化为普通替换，避免整次写入失败。
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
             }
         } finally {
             Files.deleteIfExists(temp);
         }
+    }
+
+    /** {@code Files.createTempFile} 要求前缀至少 3 个字符，文件名过短时补齐。 */
+    private static String prefixOf(String fileName) {
+        return fileName.length() >= 3 ? fileName : (fileName + "___").substring(0, 3);
     }
 }
