@@ -11,6 +11,7 @@ import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -122,8 +123,23 @@ public final class SharedStore {
             Map<String, Map<String, String>> copy = snapshot();
             try {
                 Files.createDirectories(file.getParent());
-                try (Writer out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-                    gson.toJson(copy, DATA_TYPE, out);
+                // 原子写：这是跨服禁言的唯一权威数据，直接截断写会在进程被 kill 时
+                // 留下半截 JSON——load() 只记一条 warn 就以空状态启动，随后覆盖，数据不可恢复。
+                Path temp = Files.createTempFile(file.getParent(), "shared-state", ".tmp");
+                try {
+                    try (Writer out = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                        gson.toJson(copy, DATA_TYPE, out);
+                    }
+                    try {
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (java.nio.file.FileSystemException e) {
+                        // Windows 上目标被短暂占用时抛的是 FileSystemException，退化为普通替换
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temp);
                 }
             } catch (Throwable t) {
                 logger.warn("保存共享状态失败：{}", t.getMessage());

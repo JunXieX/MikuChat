@@ -75,6 +75,17 @@ public final class FormatManager implements FormatService {
     }
 
     /**
+     * 清空频道显示名缓存。
+     * <p>
+     * 显示名来自 channels/*.yml，由 channel 模块加载；`/mchat reload channel` 只重载
+     * 频道配置、不会触发本模块的 load()，因此需要由频道模块在重载后显式通知，
+     * 否则聊天行里的频道名会一直停留在旧样式。
+     */
+    public void invalidateChannelCache() {
+        channelCache.clear();
+    }
+
+    /**
      * 按 priority 从高到低匹配。命中条件为「规则 id 等于频道的 format 配置」或「规则的 channel 命中频道 id」，
      * 二者任一成立即可；这样既让 channels/*.yml 的 format 键生效，也不会抢掉 admin 这类高优先级通配规则。
      */

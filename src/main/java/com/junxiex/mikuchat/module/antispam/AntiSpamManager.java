@@ -85,16 +85,19 @@ public final class AntiSpamManager implements AntiSpamService {
             }
         }
 
-        if (profile.throttleEnabled() && !consumeToken(state, profile)) {
-            return blocked(profile, Type.THROTTLE, 0);
-        }
-
+        // 先做只读判定（重复 / 相似），再扣令牌：
+        // 被拒绝的消息本来就没发出去，若先扣令牌，连续被拒后会被误报为「发送过于频繁」，
+        // 提示原因与真实原因不符，还会提前耗尽额度。
         if (profile.repetitionEnabled() && isRepetition(text, profile)) {
             return blocked(profile, Type.REPETITION, 0);
         }
 
         if (profile.similarityEnabled() && isSimilar(text, state, profile)) {
             return blocked(profile, Type.SIMILARITY, 0);
+        }
+
+        if (profile.throttleEnabled() && !consumeToken(state, profile)) {
+            return blocked(profile, Type.THROTTLE, 0);
         }
 
         state.lastMessageAt(now);
@@ -126,10 +129,11 @@ public final class AntiSpamManager implements AntiSpamService {
         synchronized (state) {
             double capacity = profile.throttleMax();
             long now = System.nanoTime();
-            if (state.lastMessageAt() == 0 && state.tokens() == 0) {
+            if (!state.initialized()) {
                 // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
                 state.tokens(capacity);
                 state.lastRefillNanos(now);
+                state.initialized(true);
             }
             double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
             long elapsedNanos = now - state.lastRefillNanos();
@@ -225,7 +229,13 @@ public final class AntiSpamManager implements AntiSpamService {
         if (profile != null) {
             return profile;
         }
-        return profiles.getOrDefault(defaultProfile, profiles.values().stream().findFirst().orElse(null));
+        profile = profiles.get(defaultProfile);
+        if (profile != null) {
+            return profile;
+        }
+        // 只在真正落到兜底时才遍历：getOrDefault 的默认值参数会被急切求值，
+        // 放在热路径上会对每条消息都做一次无谓的 stream 分配。
+        return profiles.values().stream().findFirst().orElse(null);
     }
 
     @Override

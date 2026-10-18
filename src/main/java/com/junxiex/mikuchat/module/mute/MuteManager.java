@@ -98,6 +98,9 @@ public final class MuteManager implements MuteService {
             cache.clear();
             cache.putAll(loaded);
             purgeExpired();
+            // 关键：把权威结果回写到本地回落文件。否则本文件里的旧记录会在下次
+            // load() 时被当作「本地独有禁言」重新回填给代理，使已解除的禁言复活。
+            syncLocalFileToCache();
         } catch (Throwable t) {
             plugin.debug("解析共享状态失败: " + t.getMessage());
         }
@@ -185,12 +188,15 @@ public final class MuteManager implements MuteService {
     public boolean unmute(UUID uuid) {
         boolean removed = cache.remove(uuid) != null;
         NetworkService network = network();
-        if (network != null && network.available()) {
+        boolean networkReady = network != null && network.available();
+        if (networkReady) {
             network.hashDelete(MUTE_HASH_KEY, uuid.toString());
         }
         saveLocal(uuid, null);
         publish(uuid, null, true);
-        return removed;
+        // 代理可用时以共享存储为准：它里面可能还有一条本服尚未同步到缓存的禁言，
+        // 此时本地 cache 没命中不代表「本来就没禁言」，两者任一命中都应报告已解除。
+        return removed || networkReady;
     }
 
     private void publish(UUID uuid, String value, boolean remove) {
@@ -299,6 +305,28 @@ public final class MuteManager implements MuteService {
             }
             saveLocal(uuid, null);
         }
+    }
+
+    /**
+     * 用当前缓存整体重写 {@code mute.yml}，使本地回落文件与代理端权威状态保持一致。
+     * <p>
+     * 写入集中在单线程执行器，避免与 {@link #saveLocal} 的单条写入交叉导致文件错乱；
+     * 整份重写而不是逐条删除，能一并清掉代理端已不存在的历史记录。
+     */
+    private void syncLocalFileToCache() {
+        Map<UUID, MuteInfo> snapshot = new HashMap<>(cache);
+        submitLocalWrite(() -> {
+            File file = new File(plugin.getDataFolder(), "mute.yml");
+            YamlConfiguration yaml = new YamlConfiguration();
+            for (Map.Entry<UUID, MuteInfo> entry : snapshot.entrySet()) {
+                yaml.set("mutes." + entry.getKey(), serialize(entry.getValue()));
+            }
+            try {
+                com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);
+            } catch (Exception e) {
+                plugin.getLogger().warning("同步 mute.yml 失败: " + e.getMessage());
+            }
+        });
     }
 
     /** 关闭本地回落文件的写入线程，供模块停用时调用。等待已排队的写入落盘，避免停服瞬间丢数据。 */

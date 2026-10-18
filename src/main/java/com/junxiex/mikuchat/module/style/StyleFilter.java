@@ -56,7 +56,15 @@ public final class StyleFilter {
     }
 
     public Component render(String text, Player player) {
-        return TextUtil.mini().deserialize(sanitize(text, player));
+        String sanitized = sanitize(text, player);
+        try {
+            return TextUtil.mini().deserialize(sanitized);
+        } catch (RuntimeException e) {
+            // 兜底：即便有权限的玩家写出了 MiniMessage 无法解析的标签（如非法参数），
+            // 也不能让整条消息因异常丢失——退化为纯文本发送。
+            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送: " + e.getMessage());
+            return Component.text(sanitized.replace("\\<", "<"));
+        }
     }
 
     public String sanitize(String text, Player player) {
@@ -96,13 +104,20 @@ public final class StyleFilter {
             return false;
         }
         if (normalized.startsWith("#")) {
-            return has(player, "color-hex") && normalized.length() >= 4;
+            // 必须校验为合法的 3/6 位十六进制：非法色值会让 MiniMessage 解析抛异常，
+            // 而异常会沿整条消息的渲染链上抛，最终表现为「玩家发不出任何消息」。
+            return has(player, "color-hex") && isHexColor(normalized);
         }
         if (normalized.indexOf(':') >= 0) {
             // 带参数的标签（gradient / click / hover / font 等）一律归入高级权限
             return has(player, "advanced");
         }
-        if (normalized.equals("reset") || normalized.equals("newline")) {
+        if (normalized.equals("newline") || normalized.equals("br")) {
+            // 换行不是颜色能力：若跟随默认对所有玩家开放的 color-named，
+            // 任何人都能把一句话渲染成多行，伪造「看起来像系统/管理员发言」的内容。
+            return has(player, "advanced");
+        }
+        if (normalized.equals("reset")) {
             return has(player, "color-named") || has(player, "advanced");
         }
         if (NAMED_COLORS.contains(normalized)) {
@@ -112,6 +127,20 @@ public final class StyleFilter {
             return has(player, "decoration");
         }
         return has(player, "advanced");
+    }
+
+    /** 校验 {@code #rgb} / {@code #rrggbb} 形式的十六进制色值。 */
+    private static boolean isHexColor(String normalized) {
+        int length = normalized.length() - 1;
+        if (length != 3 && length != 6) {
+            return false;
+        }
+        for (int i = 1; i < normalized.length(); i++) {
+            if (Character.digit(normalized.charAt(i), 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean has(Player player, String key) {

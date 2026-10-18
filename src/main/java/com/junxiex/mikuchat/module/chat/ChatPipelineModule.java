@@ -212,7 +212,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         FormatService format = plugin.services().find(FormatService.class).orElse(null);
         Component line = format == null ? composed.body() : format.render(sender, channel, composed.body());
 
-        deliverLocal(viewers, line);
+        deliverLocal(viewers, channel, line);
 
         if (crossServer && networkReady) {
             network.publish(TYPE_CHAT, new NetworkService.ChatOutbound(
@@ -225,9 +225,17 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         record(channel, sender.getName(), raw, false);
     }
 
-    private void deliverLocal(Collection<Audience> viewers, Component line) {
+    /**
+     * 本服投递。频道配了 permission 时只发给有权限的玩家：否则「限权频道」在本服照常
+     * 广播给所有人，而同样的消息从别的服务器发来却会按权限过滤，两侧策略不一致。
+     */
+    private void deliverLocal(Collection<Audience> viewers, ChannelView channel, Component line) {
+        ChannelService channelService = plugin.services().find(ChannelService.class).orElse(null);
         for (Audience audience : viewers) {
             if (audience instanceof Player player) {
+                if (channelService != null && !channelService.mayUse(player, channel)) {
+                    continue;
+                }
                 plugin.scheduler().atEntity(player, () -> player.sendMessage(line));
             } else {
                 audience.sendMessage(line);
@@ -288,12 +296,19 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             plugin.debug("解析跨服聊天组件失败: " + t.getMessage());
             return;
         }
+        if (line == null) {
+            return;
+        }
+        // 整行组件来自远端，其中的 click / hover 是发送服按自己的权限策略放行的。
+        // 接收服若不剥离，等于让对端决定本服玩家能看到什么交互组件（可点击执行指令），
+        // 与私聊路径保持同一标准。
+        final Component safeLine = TextUtil.stripInteractive(line);
         for (Player player : Bukkit.getOnlinePlayers()) {
             // 按频道权限逐个筛选，复用 mayUse 以正确处理「permission 为空表示无限制」的语义
             if (!channelService.mayUse(player, channel)) {
                 continue;
             }
-            plugin.scheduler().atEntity(player, () -> player.sendMessage(line));
+            plugin.scheduler().atEntity(player, () -> player.sendMessage(safeLine));
         }
         // 频道显示名一律用本服配置里的值，而不是远端包携带的值：
         // 显示名是 MiniMessage 模板，若由远端提供并解析，等于给了对方注入任意组件的通道。

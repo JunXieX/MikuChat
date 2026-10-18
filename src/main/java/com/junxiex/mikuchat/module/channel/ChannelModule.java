@@ -38,5 +38,8 @@ public final class ChannelModule implements ChatModule {
     @Override
     public void reload() {
         channelManager.reload();
+        // 频道显示名可能已改动，通知格式模块丢弃解析缓存，否则聊天行里仍是旧样式
+        plugin.services().find(com.junxiex.mikuchat.module.format.FormatManager.class)
+                .ifPresent(com.junxiex.mikuchat.module.format.FormatManager::invalidateChannelCache);
     }
 }

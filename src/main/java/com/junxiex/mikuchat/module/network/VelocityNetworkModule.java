@@ -92,8 +92,10 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     private volatile String channel = "mikuchat:proxy";
     private volatile boolean available;
     private volatile UUID carrierId;
-    private int presenceTimeout = 1500;
-    private int queueCapacity = 1024;
+    // 与 channel/available 一样由 enable() 在重载时重新赋值，而读取可能发生在
+    // 异步线程（查询超时）或实体线程（入队容量），必须 volatile 保证可见性。
+    private volatile int presenceTimeout = 1500;
+    private volatile int queueCapacity = 1024;
 
     public VelocityNetworkModule(MikuChat plugin) {
         this.plugin = plugin;
@@ -156,9 +158,8 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         for (Consumer<Presence> callback : stalled) {
             callback.accept(new Presence(Map.of()));
         }
-        synchronized (outbound) {
-            outbound.clear();
-        }
+        // 这里不清空 outbound：这些消息通常是「本服无人在线时暂存的禁言变更」，
+        // 清掉就等于丢数据。真正的停用由 shutdown() 统一丢弃，重载则原样保留待补发。
         // handlers 中保存着聊天/私聊/禁言等模块的订阅，重载时不能清除，
         // 否则 /mchat reload network 之后跨服功能会静默失效
         plugin.services().unregister(VelocityNetworkModule.class);
@@ -277,15 +278,32 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
                     outbound.clear();
                 }
             }
+            int sent = 0;
+            Throwable failure = null;
             for (byte[] data : queued) {
                 try {
                     player.sendPluginMessage(plugin, channel, data);
+                    sent++;
                 } catch (Throwable t) {
-                    plugin.debug("补发跨服消息失败: " + t.getMessage());
+                    failure = t;
                     break;
                 }
             }
-            if (!queued.isEmpty()) {
+            if (failure != null) {
+                // 中途失败：把没发出去的部分原样放回队首，等下一个玩家接入时重试，
+                // 否则一次连接异常就会静默丢掉整批禁言同步消息。
+                List<byte[]> unsent = queued.subList(sent, queued.size());
+                synchronized (outbound) {
+                    for (int i = unsent.size() - 1; i >= 0; i--) {
+                        outbound.addFirst(unsent.get(i));
+                    }
+                    // 重新入队后仍受容量约束
+                    while (outbound.size() > queueCapacity) {
+                        outbound.pollLast();
+                    }
+                }
+                plugin.debug("补发跨服消息失败，剩余 " + unsent.size() + " 条已重新排队: " + failure.getMessage());
+            } else if (!queued.isEmpty()) {
                 plugin.debug("已补发 " + queued.size() + " 条暂存的跨服消息。");
             }
             send(buildEnvelope(TYPE_STATE_REQ, Map.of()), false);
