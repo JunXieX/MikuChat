@@ -68,12 +68,12 @@ public final class ProxyBridge {
             JsonObject envelope = JsonParser.parseString(new String(event.getData(), StandardCharsets.UTF_8))
                     .getAsJsonObject();
             String type = envelope.get("type").getAsString();
-            String source = envelope.get("src").getAsString();
+            // src 仅用于后端侧的来源校验；代理端这里一律以真实连接所属服务器为准
             JsonObject data = envelope.has("data") && envelope.get("data").isJsonObject()
                     ? envelope.getAsJsonObject("data") : new JsonObject();
             RegisteredServer origin = connection.getServer();
             switch (type) {
-                case TYPE_WHO_REQ -> replyPresence(origin, source, data);
+                case TYPE_WHO_REQ -> replyPresence(origin, data);
                 case TYPE_STATE_REQ -> replyState(origin);
                 case TYPE_KV_SET -> store.put(text(data, "key"), text(data, "field"), text(data, "value"));
                 case TYPE_KV_DEL -> store.remove(text(data, "key"), text(data, "field"));
@@ -87,14 +87,20 @@ public final class ProxyBridge {
     /**
      * 在线查询：代理端掌握全量玩家所在服务器，直接查表应答，零额外往返。
      * 结果不含发起方自身，与后端 {@code Presence} 的语义一致。
+     * <p>
+     * 排除本服时用的是消息实际来源连接的服务器名，而不是信封里的 {@code src}：
+     * {@code src} 由后端配置的 {@code server-id} 填入，它未必与 {@code velocity.toml}
+     * 注册的服务器名完全一致。若用 {@code src} 过滤，配置不同名时本服玩家会被当成
+     * 「其它服务器」列出来，造成自己看得到自己的重复条目。
      */
-    private void replyPresence(RegisteredServer origin, String source, JsonObject data) {
+    private void replyPresence(RegisteredServer origin, JsonObject data) {
+        String originName = origin.getServerInfo().getName();
         Map<String, List<String>> servers = new LinkedHashMap<>();
         for (Player player : proxy.getAllPlayers()) {
             String serverName = player.getCurrentServer()
                     .map(connection -> connection.getServerInfo().getName())
                     .orElse(null);
-            if (serverName == null || serverName.equals(source)) {
+            if (serverName == null || serverName.equals(originName)) {
                 continue;
             }
             servers.computeIfAbsent(serverName, key -> new ArrayList<>()).add(player.getUsername());

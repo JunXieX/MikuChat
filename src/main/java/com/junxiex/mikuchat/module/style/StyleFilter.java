@@ -17,7 +17,12 @@ import java.util.regex.Pattern;
  */
 public final class StyleFilter {
 
-    private static final Pattern TAG = Pattern.compile("<([^<>]*)>");
+    /**
+     * 标签识别。显式排除换行：{@code [^<>]*} 会跨越换行，使
+     * {@code <red>第一行} 与后续某行的 {@code >} 被当成同一个「标签」，
+     * 从而把中间的正常文本整段吞进判定、破坏转义结果。
+     */
+    private static final Pattern TAG = Pattern.compile("<([^<>\r\n]*)>");
 
     private static final Set<String> NAMED_COLORS = Set.of(
             "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",

@@ -92,8 +92,12 @@ public final class AhoCorasick {
             }
             for (int patternIndex : node.output) {
                 int length = patternLengths[patternIndex];
-                if (length > 0) {
-                    matches.add(new Match(i - length + 1, i + 1, patterns.get(patternIndex)));
+                int start = i - length + 1;
+                // 失败链合并来的 output 可能包含长度超过当前已扫描字符数的模式，
+                // 此时 start 为负，属于不可能命中的组合，必须丢弃，否则会产生非法区间
+                // 并在后续「归一化下标 → 原文区间」映射时把替换落到错误位置。
+                if (length > 0 && start >= 0) {
+                    matches.add(new Match(start, i + 1, patterns.get(patternIndex)));
                 }
             }
         }

@@ -109,8 +109,10 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     public void enable() {
         plugin.configManager().reload("network.yml");
         this.channel = config.config().getString("channel", "mikuchat:proxy");
-        this.presenceTimeout = config.config().getInt("presence-timeout-millis", 1500);
-        this.queueCapacity = config.config().getInt("outbound-queue-capacity", 1024);
+        this.presenceTimeout = Math.max(1, config.config().getInt("presence-timeout-millis", 1500));
+        // 队列容量必须为正：<=0 会让下面的裁剪循环永远成立（负数时直接死循环），
+        // 而 0 会造成「每条都先被清空再入队」，等于队列失效。
+        this.queueCapacity = Math.max(1, config.config().getInt("outbound-queue-capacity", 1024));
         this.trustedServers.clear();
         this.trustedServers.addAll(config.config().getStringList("trusted-servers"));
 
@@ -385,6 +387,10 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     /**
      * 发送一条插件消息。插件消息必须借由玩家连接发出，
      * 因此 {@code queueIfOffline} 为 true 时无人在线则暂存待补发，否则直接丢弃。
+     * <p>
+     * {@code sendPluginMessage} 会触碰玩家连接状态，在 Folia 下必须落在该玩家所属区域线程；
+     * 本方法的调用方可能是全局线程或异步线程（如跨服状态回填），因此统一经由
+     * {@link com.junxiex.mikuchat.core.scheduler.SchedulerUtil#atEntity} 投递。
      */
     private void send(String json, boolean queueIfOffline) {
         byte[] data = json.getBytes(StandardCharsets.UTF_8);
@@ -395,11 +401,22 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             }
             return;
         }
-        try {
-            carrier.sendPluginMessage(plugin, channel, data);
-        } catch (Throwable t) {
-            plugin.debug("发送跨服消息失败: " + t.getMessage());
-        }
+        plugin.scheduler().atEntity(carrier, () -> {
+            try {
+                if (!carrier.isOnline()) {
+                    // 承载玩家在投递前离线：按队列语义处理，避免消息静默丢失
+                    if (queueIfOffline) {
+                        enqueue(data);
+                    }
+                    carrierId = null;
+                    return;
+                }
+                carrier.sendPluginMessage(plugin, channel, data);
+            } catch (Throwable t) {
+                plugin.debug("发送跨服消息失败: " + t.getMessage());
+                carrierId = null;
+            }
+        });
     }
 
     private void enqueue(byte[] data) {

@@ -186,7 +186,7 @@ public final class PrivateManager {
             pending.put(id, new PendingDelivery(sender, targetName, senderLine, finalContent));
             network.publish(TYPE_PRIVATE, new PrivatePacket(id, sender.getUniqueId(), sender.getName(),
                     targetName, owners.get(0), TextUtil.toJson(receiverLine), finalContent,
-                    System.currentTimeMillis()));
+                    composed.mentions(), System.currentTimeMillis()));
             plugin.scheduler().asyncLater(() -> {
                 PendingDelivery delivery = pending.remove(id);
                 if (delivery != null && delivery.sender().isOnline()) {
@@ -246,7 +246,8 @@ public final class PrivateManager {
         final Component safeLine = stripInteractive(receiverLine);
         plugin.scheduler().atEntity(target, () -> target.sendMessage(safeLine));
         dispatchSpy(safeLine, packet.senderId());
-        notifyMentions(packet.senderId(), null);
+        // 跨服私聊里的 @ 提醒由接收端触发：发送端的本地提醒覆盖不到另一台服务器的玩家
+        notifyMentions(packet.senderId(), packet.safeMentions());
         log(packet.senderName(), target.getName(), packet.rawText(), true);
         plugin.services().find(NetworkService.class)
                 .ifPresent(network -> network.publish(TYPE_ACK, Map.of("id", packet.id())));
@@ -362,9 +363,20 @@ public final class PrivateManager {
         replyTargets.remove(uuid);
     }
 
-    /** 跨服私聊包。targetServer 为空表示未定向（兼容旧版本节点，收到即投递）。 */
+    /**
+     * 跨服私聊包。targetServer 为空表示未定向（兼容旧版本节点，收到即投递）。
+     * <p>
+     * {@code mentions} 用于接收端补发 @ 提醒：发送端本地的提醒只覆盖本服玩家，
+     * 目标玩家在另一台服务器，必须由接收端触发，否则跨服私聊里的 @ 永远不会有提示。
+     */
     public record PrivatePacket(String id, UUID senderId, String senderName, String targetName,
-                                String targetServer, String receiverLine, String rawText, long timestamp) {
+                                String targetServer, String receiverLine, String rawText,
+                                List<String> mentions, long timestamp) {
+
+        /** 兼容旧版本节点发来的、不带 mentions 字段的包（Gson 会把缺失字段置为 null）。 */
+        public List<String> safeMentions() {
+            return mentions == null ? List.of() : mentions;
+        }
     }
 
     private record AckPacket(String id) {

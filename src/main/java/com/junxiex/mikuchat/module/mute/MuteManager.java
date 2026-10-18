@@ -270,7 +270,13 @@ public final class MuteManager implements MuteService {
         cache.entrySet().removeIf(entry -> entry.getValue().expired());
     }
 
-    /** 周期清理：把已过期禁言从本地缓存、共享存储与回落文件中一并移除。 */
+    /**
+     * 周期清理：把已过期禁言从本地缓存、共享存储与回落文件中一并移除。
+     * <p>
+     * 过期禁言对玩家已无约束力（{@link #muteOf} 本就把过期记录视为未禁言），因此这里只需要
+     * 清掉残留数据，不需要再逐个 {@code publish} 广播：每 5 分钟一次全量广播既浪费插件消息带宽，
+     * 也会让其它服务器做无意义的缓存写入。共享存储用 {@code hashDelete} 同步删除即可。
+     */
     public void purge() {
         List<UUID> expired = new ArrayList<>();
         for (Map.Entry<UUID, MuteInfo> entry : cache.entrySet()) {
@@ -278,8 +284,20 @@ public final class MuteManager implements MuteService {
                 expired.add(entry.getKey());
             }
         }
+        if (expired.isEmpty()) {
+            return;
+        }
+        NetworkService network = network();
+        boolean networkReady = network != null && network.available();
         for (UUID uuid : expired) {
-            unmute(uuid);
+            // 先移除缓存：即便后续 I/O 失败，玩家也不会因过期记录被继续拦下
+            if (cache.remove(uuid) == null) {
+                continue;
+            }
+            if (networkReady) {
+                network.hashDelete(MUTE_HASH_KEY, uuid.toString());
+            }
+            saveLocal(uuid, null);
         }
     }
 

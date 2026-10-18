@@ -38,6 +38,8 @@ import java.util.function.BiConsumer;
 public final class ChatPipelineModule implements ChatModule, Listener {
 
     private static final String TYPE_CHAT = "CHAT";
+    /** 跨服聊天组件 JSON 的最大长度，超出即视为可疑并丢弃（与私聊保持一致）。 */
+    private static final int MAX_REMOTE_LINE_LENGTH = 16384;
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -215,7 +217,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         if (crossServer && networkReady) {
             network.publish(TYPE_CHAT, new NetworkService.ChatOutbound(
                     sender.getUniqueId(), sender.getName(), network.serverId(), channel.id(),
-                    channel.displayName(), raw, TextUtil.toJson(line), composed.mentions(),
+                    raw, TextUtil.toJson(line), composed.mentions(),
                     System.currentTimeMillis()));
         }
 
@@ -266,6 +268,19 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         if (packet == null || packet.lineJson() == null) {
             return;
         }
+        // 跨服组件体积上限：与私聊保持一致，避免对端异常或恶意构造超大 JSON 撑爆内存
+        if (packet.lineJson().length() > MAX_REMOTE_LINE_LENGTH) {
+            plugin.debug("丢弃体积异常的跨服聊天组件: " + packet.senderName());
+            return;
+        }
+        // 远端只应广播 NETWORK 作用域的频道。若不校验，任何一台服务器（或伪造包）
+        // 都能把消息推到本服所有玩家，包括本服设为 SERVER 作用域、带权限限制的频道。
+        ChannelService channelService = plugin.services().find(ChannelService.class).orElse(null);
+        ChannelView channel = channelService == null ? null : channelService.byId(packet.channelId());
+        if (channel == null || !channel.valid() || channel.scope() != ChannelScope.NETWORK) {
+            plugin.debug("丢弃跨服聊天：本服不存在跨服频道 " + packet.channelId());
+            return;
+        }
         Component line;
         try {
             line = TextUtil.fromJson(packet.lineJson());
@@ -274,13 +289,15 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             return;
         }
         for (Player player : Bukkit.getOnlinePlayers()) {
+            // 按频道权限逐个筛选，复用 mayUse 以正确处理「permission 为空表示无限制」的语义
+            if (!channelService.mayUse(player, channel)) {
+                continue;
+            }
             plugin.scheduler().atEntity(player, () -> player.sendMessage(line));
         }
-        notifyMentions(packet.senderId(), packet.mentions(), packet.channelDisplay());
-        ChannelView channel = plugin.services().find(ChannelService.class)
-                .map(service -> service.byId(packet.channelId())).orElse(null);
-        if (channel != null) {
-            record(channel, packet.senderName(), packet.rawText(), true);
-        }
+        // 频道显示名一律用本服配置里的值，而不是远端包携带的值：
+        // 显示名是 MiniMessage 模板，若由远端提供并解析，等于给了对方注入任意组件的通道。
+        notifyMentions(packet.senderId(), packet.mentions(), channel.displayName());
+        record(channel, packet.senderName(), packet.rawText(), true);
     }
 }
