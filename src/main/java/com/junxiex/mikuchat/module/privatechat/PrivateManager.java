@@ -253,7 +253,7 @@ public final class PrivateManager {
         plugin.scheduler().atEntity(target, () -> target.sendMessage(safeLine));
         // 接收方也要能 /reply 回来：跨服场景下发送方的回复指针由 ACK 写入，
         // 接收方这一侧必须在投递时补上，否则 B 回不了 A，只能提示「没有回复对象」。
-        replyTargets.put(target.getUniqueId(), packet.senderName());
+        replyTargets.put(target.getUniqueId(), packet.safeSenderName());
         dispatchSpy(safeLine, packet.senderId(), target.getUniqueId());
         // 跨服私聊里的 @ 提醒由接收端触发：发送端的本地提醒覆盖不到另一台服务器的玩家
         notifyMentions(packet.senderId(), packet.safeMentions());
@@ -271,6 +271,10 @@ public final class PrivateManager {
         try {
             id = gson.fromJson(json, AckPacket.class).id();
         } catch (Throwable t) {
+            return;
+        }
+        // 缺 id 的包（异构/旧版节点）会让 ConcurrentHashMap.remove(null) 抛 NPE
+        if (id == null) {
             return;
         }
         PendingDelivery delivery = pending.remove(id);

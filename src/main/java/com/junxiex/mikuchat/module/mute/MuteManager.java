@@ -222,6 +222,13 @@ public final class MuteManager implements MuteService {
         network.publish(MUTE_UPDATE_TYPE, payload);
     }
 
+    /**
+     * 处理其它服务器发来的禁言变更。
+     * <p>
+     * 必须同步维护 {@code mute.yml}：本地回落文件在 {@link #load()} 时会被当作
+     * 「本地独有禁言」回填给代理，若这里只改内存不落盘，别的服务器解除禁言后本服文件
+     * 仍保留旧记录，重启或 reload 时就会把它重新推回共享存储，让已解除的禁言复活。
+     */
     private void handleUpdate(String json) {
         Map<String, String> payload = parseJson(json);
         if (payload == null) {
@@ -235,10 +242,12 @@ public final class MuteManager implements MuteService {
             UUID uuid = UUID.fromString(uuidString);
             if (Boolean.parseBoolean(payload.get("remove"))) {
                 cache.remove(uuid);
+                saveLocal(uuid, null);
             } else {
                 MuteInfo info = parse(payload.get("value"));
                 if (info != null) {
                     cache.put(uuid, info);
+                    saveLocal(uuid, payload.get("value"));
                 }
             }
         } catch (IllegalArgumentException ignored) {

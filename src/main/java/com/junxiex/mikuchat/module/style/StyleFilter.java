@@ -38,6 +38,8 @@ public final class StyleFilter {
     private final MikuChat plugin;
     /** 已报告过的解析失败原因，避免同一种畸形标签反复刷日志。 */
     private final java.util.Set<String> reportedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 去重集合的容量上限，防止输入多样性导致无界增长。 */
+    private static final int MAX_REPORTED_FAILURES = 32;
     // 权限串与开关在 load 时解析一次，避免每条消息反复查配置
     private volatile boolean escapeByDefault = true;
     private volatile java.util.Map<String, String> permissions = java.util.Map.of();
@@ -71,9 +73,12 @@ public final class StyleFilter {
     }
 
     private void logParseFailure(RuntimeException e) {
-        String reason = e.getClass().getSimpleName() + ": " + e.getMessage();
-        if (reportedFailures.add(reason)) {
-            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送 -> " + reason);
+        // 用异常类型而非完整消息作去重键：消息里包含玩家输入的标签原文，
+        // 若以它为键，有权限者可用互不相同的畸形标签让集合无限增长。
+        String reason = e.getClass().getSimpleName();
+        if (reportedFailures.size() < MAX_REPORTED_FAILURES && reportedFailures.add(reason)) {
+            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送 -> " + reason
+                    + "（同类问题仅提示一次）");
         }
     }
 
