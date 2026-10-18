@@ -139,10 +139,12 @@ public final class StyleFilter {
         return has(player, "advanced");
     }
 
-    /** 校验 {@code #rgb} / {@code #rrggbb} 形式的十六进制色值。 */
+    /**
+     * 校验十六进制色值。MiniMessage / Adventure 只接受 6 位 {@code #rrggbb}，
+     * 3 位简写（{@code #abc}）会被判为非法并抛解析异常，因此这里也必须拒绝。
+     */
     private static boolean isHexColor(String normalized) {
-        int length = normalized.length() - 1;
-        if (length != 3 && length != 6) {
+        if (normalized.length() != 7 || normalized.charAt(0) != '#') {
             return false;
         }
         for (int i = 1; i < normalized.length(); i++) {

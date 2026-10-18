@@ -159,7 +159,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             callback.accept(new Presence(Map.of()));
         }
         // 这里不清空 outbound：这些消息通常是「本服无人在线时暂存的禁言变更」，
-        // 清掉就等于丢数据。真正的停用由 shutdown() 统一丢弃，重载则原样保留待补发。
+        // 清掉就等于丢数据。重载由本方法 + enable() 完成，队列原样保留待补发。
         // handlers 中保存着聊天/私聊/禁言等模块的订阅，重载时不能清除，
         // 否则 /mchat reload network 之后跨服功能会静默失效
         plugin.services().unregister(VelocityNetworkModule.class);

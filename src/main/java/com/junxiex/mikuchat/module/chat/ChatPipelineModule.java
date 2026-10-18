@@ -153,7 +153,13 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             sender.sendMessage(plugin.lang().get("channel.not-found", "channel", plugin.defaultChannelId()));
             return;
         }
-
+        // 发送者自身也必须能用该频道：投递阶段会按频道权限过滤接收者，
+        // 若发送者本来就没权限（例如默认频道被设了权限），消息会被静默丢弃且没有任何提示。
+        ChannelService channelCheck = plugin.services().find(ChannelService.class).orElse(null);
+        if (channelCheck != null && !channelCheck.mayUse(sender, channel)) {
+            sender.sendMessage(plugin.lang().get("channel.no-permission", "channel", channel.id()));
+            return;
+        }
         MuteService mute = plugin.services().find(MuteService.class).orElse(null);
         if (mute != null) {
             var info = mute.muteOf(sender.getUniqueId());
@@ -312,7 +318,9 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         }
         // 频道显示名一律用本服配置里的值，而不是远端包携带的值：
         // 显示名是 MiniMessage 模板，若由远端提供并解析，等于给了对方注入任意组件的通道。
-        notifyMentions(packet.senderId(), packet.mentions(), channel.displayName());
-        record(channel, packet.senderName(), packet.rawText(), true);
+        notifyMentions(packet.senderId(), packet.mentions() == null ? List.of() : packet.mentions(),
+                channel.displayName());
+        record(channel, packet.senderName() == null ? "" : packet.senderName(),
+                packet.rawText() == null ? "" : packet.rawText(), true);
     }
 }

@@ -67,7 +67,9 @@ public final class WordListLoader {
                         words.add(value);
                     }
                 } else if (MAPPING_LINE.matcher(trimmed).matches()) {
-                    mappingLines.add(raw);
+                    // 存剥离后的行：若保留原始行，首行带 BOM 时 SnakeYAML 无法识别该键，
+                    // WhiteList / Replacement 会静默失效
+                    mappingLines.add(trimmed);
                 }
             }
             if (!mappingLines.isEmpty()) {

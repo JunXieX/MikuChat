@@ -58,10 +58,12 @@ public final class MuteManager implements MuteService {
         purgeExpired();
         NetworkService network = network();
         if (network != null && network.available()) {
-            // 先把本地独有的禁言回填到代理端，再请求全量状态：代理端按序处理，
-            // 回填内容会包含在随后下发的 STATE_SYNC 中，不会出现互相覆盖。
-            uploadLocalToShared();
-            network.requestState();
+            // 必须先完成回填再请求全量快照：两条消息都经由玩家连接异步发出，
+            // 若顺序颠倒，STATE_SYNC 可能先于 KV_SET 到达代理，随后下发的快照不含本地
+            // 独有的禁言，缓存被覆盖后连本地文件也会被同步成「无记录」，数据就此丢失。
+            if (uploadLocalToShared()) {
+                network.requestState();
+            }
         }
     }
 
@@ -106,15 +108,20 @@ public final class MuteManager implements MuteService {
         }
     }
 
-    /** 代理端可用时，把仅存在于本地的禁言回填到共享存储，避免以其为源导致跨服不同步。 */
-    private void uploadLocalToShared() {
+    /**
+     * 代理端可用时，把仅存在于本地的禁言回填到共享存储，避免以其为源导致跨服不同步。
+     *
+     * @return 是否已提交回填（代理不可用时为 false）
+     */
+    private boolean uploadLocalToShared() {
         NetworkService network = network();
         if (network == null || !network.available()) {
-            return;
+            return false;
         }
         for (Map.Entry<UUID, MuteInfo> entry : cache.entrySet()) {
             network.hashSet(MUTE_HASH_KEY, entry.getKey().toString(), serialize(entry.getValue()));
         }
+        return true;
     }
 
     private void loadLocalFile() {
@@ -188,15 +195,17 @@ public final class MuteManager implements MuteService {
     public boolean unmute(UUID uuid) {
         boolean removed = cache.remove(uuid) != null;
         NetworkService network = network();
-        boolean networkReady = network != null && network.available();
-        if (networkReady) {
+        if (network != null && network.available()) {
             network.hashDelete(MUTE_HASH_KEY, uuid.toString());
         }
         saveLocal(uuid, null);
-        publish(uuid, null, true);
-        // 代理可用时以共享存储为准：它里面可能还有一条本服尚未同步到缓存的禁言，
-        // 此时本地 cache 没命中不代表「本来就没禁言」，两者任一命中都应报告已解除。
-        return removed || networkReady;
+        // 只在本地确实有记录时广播：否则对未被禁言的玩家也会让全网做一次无意义删除
+        if (removed) {
+            publish(uuid, null, true);
+        }
+        // 只按本地缓存判断：hashDelete 是幂等删除，代理可用并不能证明「本来确实有禁言」。
+        // 若用 networkReady 兜底，生产环境下对未被禁言的玩家也会提示「已解除禁言」，属必然误报。
+        return removed;
     }
 
     private void publish(UUID uuid, String value, boolean remove) {

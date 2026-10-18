@@ -251,10 +251,13 @@ public final class PrivateManager {
         // 交互事件，若整条丢弃，含这些标记的跨服私聊会静默消失、双方都收不到任何提示。
         final Component safeLine = TextUtil.stripInteractive(receiverLine);
         plugin.scheduler().atEntity(target, () -> target.sendMessage(safeLine));
+        // 接收方也要能 /reply 回来：跨服场景下发送方的回复指针由 ACK 写入，
+        // 接收方这一侧必须在投递时补上，否则 B 回不了 A，只能提示「没有回复对象」。
+        replyTargets.put(target.getUniqueId(), packet.senderName());
         dispatchSpy(safeLine, packet.senderId(), target.getUniqueId());
         // 跨服私聊里的 @ 提醒由接收端触发：发送端的本地提醒覆盖不到另一台服务器的玩家
         notifyMentions(packet.senderId(), packet.safeMentions());
-        log(packet.senderName(), target.getName(), packet.rawText(), true);
+        log(packet.safeSenderName(), target.getName(), packet.safeRawText(), true);
         plugin.services().find(NetworkService.class)
                 .ifPresent(network -> network.publish(TYPE_ACK, Map.of("id", String.valueOf(packet.id()))));
     }
@@ -372,6 +375,15 @@ public final class PrivateManager {
         /** 兼容旧版本节点发来的、不带 mentions 字段的包（Gson 会把缺失字段置为 null）。 */
         public List<String> safeMentions() {
             return mentions == null ? List.of() : mentions;
+        }
+
+        /** 缺字段时给出空串，避免拼接日志时 String.replace 收到 null 抛 NPE。 */
+        public String safeSenderName() {
+            return senderName == null ? "" : senderName;
+        }
+
+        public String safeRawText() {
+            return rawText == null ? "" : rawText;
         }
     }
 
