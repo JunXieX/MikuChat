@@ -79,8 +79,9 @@ public final class TextUtil {
         // 翻译组件的参数是组件列表，但不属于 children：漏掉它们等于给
         // `<lang:key:<click:run_command:...>>` 留了一条把交互组件带过信任边界的通道。
         if (result instanceof net.kyori.adventure.text.TranslatableComponent translatable
-                && !translatable.args().isEmpty()) {
-            result = translatable.args(translatable.args().stream().map(TextUtil::stripInteractive).toList());
+                && !translatable.arguments().isEmpty()) {
+            result = translatable.arguments(translatable.arguments().stream()
+                    .map(TextUtil::stripInteractive).toList());
         }
         List<Component> children = result.children();
         if (children.isEmpty()) {
