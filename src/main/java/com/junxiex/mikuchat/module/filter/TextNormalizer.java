@@ -32,8 +32,13 @@ public final class TextNormalizer {
         // 归一化后字符数不会超过原串长度，用原始数组避免装箱（消息热路径）
         int[] starts = new int[input.length()];
         int[] ends = new int[input.length()];
+        // 下标映射必须按「UTF-16 字符单元」逐格记录，而不是按码点：
+        // 自动机（AhoCorasick）与 String#indexOf 都以 char 为单位定位，
+        // 若补充平面字符（emoji 等）只占一格，后续所有下标都会错位，导致替换落在错误位置。
         int count = 0;
         int previous = -1;
+        int previousStart = 0;
+        int previousUnits = 0;
 
         for (int i = 0; i < input.length(); ) {
             int codePoint = input.codePointAt(i);
@@ -50,12 +55,20 @@ public final class TextNormalizer {
                     : ignoreChars.indexOf(normalized) >= 0;
             if (!ignored) {
                 if (collapseRepeats && previous == normalized && count > 0) {
-                    ends[count - 1] = i + charCount;
+                    // 折叠重复：把上一个码点覆盖的所有单元一起延长到本次字符末尾
+                    for (int unit = 0; unit < previousUnits; unit++) {
+                        ends[previousStart + unit] = i + charCount;
+                    }
                 } else {
+                    int normalizedUnits = Character.charCount(normalized);
+                    for (int unit = 0; unit < normalizedUnits; unit++) {
+                        starts[count + unit] = i;
+                        ends[count + unit] = i + charCount;
+                    }
                     text.appendCodePoint(normalized);
-                    starts[count] = i;
-                    ends[count] = i + charCount;
-                    count++;
+                    previousStart = count;
+                    previousUnits = normalizedUnits;
+                    count += normalizedUnits;
                     previous = normalized;
                 }
             }

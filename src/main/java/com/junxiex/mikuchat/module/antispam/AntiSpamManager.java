@@ -63,23 +63,41 @@ public final class AntiSpamManager implements AntiSpamService {
         PlayerSpamState state = states.computeIfAbsent(sender.getUniqueId(), k -> new PlayerSpamState());
         long now = System.currentTimeMillis();
 
+        // 「查冷却 → 判频率 → 判重复/相似 → 记录本次」是一个整体判定，必须与同一玩家的
+        // 其它并发调用互斥：否则两条消息可能同时通过冷却检查，使冷却形同虚设。
+        Result violation;
+        synchronized (state) {
+            violation = evaluateLocked(state, profile, text, now);
+        }
+        // 通知管理员会派发到全局线程，放在临界区外，避免持锁期间触发调度
+        if (violation.blocked() && profile.notifyStaff()) {
+            notifyStaff(sender, violation.type());
+        }
+        return violation;
+    }
+
+    /** 在持有该玩家状态锁的前提下完成整套判定。 */
+    private Result evaluateLocked(PlayerSpamState state, AntiSpamProfile profile, String text, long now) {
         if (profile.cooldownEnabled() && profile.cooldownMillis() > 0 && state.lastMessageAt() > 0) {
             long elapsed = now - state.lastMessageAt();
             if (elapsed < profile.cooldownMillis()) {
-                return violation(profile, Type.COOLDOWN, profile.cooldownMillis() - elapsed, sender);
+                return blocked(profile, Type.COOLDOWN, profile.cooldownMillis() - elapsed);
             }
         }
 
-        if (profile.throttleEnabled() && !consumeToken(state, profile)) {
-            return violation(profile, Type.THROTTLE, 0, sender);
-        }
-
+        // 先做只读判定（重复 / 相似），再扣令牌：
+        // 被拒绝的消息本来就没发出去，若先扣令牌，连续被拒后会被误报为「发送过于频繁」，
+        // 提示原因与真实原因不符，还会提前耗尽额度。
         if (profile.repetitionEnabled() && isRepetition(text, profile)) {
-            return violation(profile, Type.REPETITION, 0, sender);
+            return blocked(profile, Type.REPETITION, 0);
         }
 
         if (profile.similarityEnabled() && isSimilar(text, state, profile)) {
-            return violation(profile, Type.SIMILARITY, 0, sender);
+            return blocked(profile, Type.SIMILARITY, 0);
+        }
+
+        if (profile.throttleEnabled() && !consumeToken(state, profile)) {
+            return blocked(profile, Type.THROTTLE, 0);
         }
 
         state.lastMessageAt(now);
@@ -87,10 +105,7 @@ public final class AntiSpamManager implements AntiSpamService {
         return Result.PASS;
     }
 
-    private Result violation(AntiSpamProfile profile, Type type, long extra, Player sender) {
-        if (profile.notifyStaff()) {
-            notifyStaff(sender, type);
-        }
+    private Result blocked(AntiSpamProfile profile, Type type, long extra) {
         return new Result(true, profile.silent(), type, extra);
     }
 
@@ -109,22 +124,27 @@ public final class AntiSpamManager implements AntiSpamService {
     }
 
     private boolean consumeToken(PlayerSpamState state, AntiSpamProfile profile) {
-        double capacity = profile.throttleMax();
-        long now = System.nanoTime();
-        if (state.lastMessageAt() == 0 && state.tokens() == 0) {
-            // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
-            state.tokens(capacity);
+        // 「读令牌 → 补算 → 扣减」必须整体原子，否则并发下会多放行或多拦截；
+        // 因此在这里对 state 加锁，而不是依赖逐个 getter/setter 的原子性。
+        synchronized (state) {
+            double capacity = profile.throttleMax();
+            long now = System.nanoTime();
+            if (!state.initialized()) {
+                // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
+                state.tokens(capacity);
+                state.lastRefillNanos(now);
+                state.initialized(true);
+            }
+            double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
+            long elapsedNanos = now - state.lastRefillNanos();
             state.lastRefillNanos(now);
+            state.tokens(Math.min(capacity, state.tokens() + elapsedNanos / 1_000_000.0 * ratePerMilli));
+            if (state.tokens() >= 1.0) {
+                state.tokens(state.tokens() - 1.0);
+                return true;
+            }
+            return false;
         }
-        double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
-        long elapsedNanos = now - state.lastRefillNanos();
-        state.lastRefillNanos(now);
-        state.tokens(Math.min(capacity, state.tokens() + elapsedNanos / 1_000_000.0 * ratePerMilli));
-        if (state.tokens() >= 1.0) {
-            state.tokens(state.tokens() - 1.0);
-            return true;
-        }
-        return false;
     }
 
     private boolean isSimilar(String text, PlayerSpamState state, AntiSpamProfile profile) {
@@ -209,7 +229,13 @@ public final class AntiSpamManager implements AntiSpamService {
         if (profile != null) {
             return profile;
         }
-        return profiles.getOrDefault(defaultProfile, profiles.values().stream().findFirst().orElse(null));
+        profile = profiles.get(defaultProfile);
+        if (profile != null) {
+            return profile;
+        }
+        // 只在真正落到兜底时才遍历：getOrDefault 的默认值参数会被急切求值，
+        // 放在热路径上会对每条消息都做一次无谓的 stream 分配。
+        return profiles.values().stream().findFirst().orElse(null);
     }
 
     @Override

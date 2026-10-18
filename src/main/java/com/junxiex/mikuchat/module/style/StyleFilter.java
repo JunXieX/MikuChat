@@ -17,7 +17,12 @@ import java.util.regex.Pattern;
  */
 public final class StyleFilter {
 
-    private static final Pattern TAG = Pattern.compile("<([^<>]*)>");
+    /**
+     * 标签识别。显式排除换行：{@code [^<>]*} 会跨越换行，使
+     * {@code <red>第一行} 与后续某行的 {@code >} 被当成同一个「标签」，
+     * 从而把中间的正常文本整段吞进判定、破坏转义结果。
+     */
+    private static final Pattern TAG = Pattern.compile("<([^<>\r\n]*)>");
 
     private static final Set<String> NAMED_COLORS = Set.of(
             "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
@@ -31,6 +36,10 @@ public final class StyleFilter {
 
     private final ConfigFile config;
     private final MikuChat plugin;
+    /** 已报告过的解析失败原因，避免同一种畸形标签反复刷日志。 */
+    private final java.util.Set<String> reportedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 去重集合的容量上限，防止输入多样性导致无界增长。 */
+    private static final int MAX_REPORTED_FAILURES = 32;
     // 权限串与开关在 load 时解析一次，避免每条消息反复查配置
     private volatile boolean escapeByDefault = true;
     private volatile java.util.Map<String, String> permissions = java.util.Map.of();
@@ -51,7 +60,26 @@ public final class StyleFilter {
     }
 
     public Component render(String text, Player player) {
-        return TextUtil.mini().deserialize(sanitize(text, player));
+        String sanitized = sanitize(text, player);
+        try {
+            return TextUtil.mini().deserialize(sanitized);
+        } catch (RuntimeException e) {
+            // 兜底：即便有权限的玩家写出了 MiniMessage 无法解析的标签（如非法参数），
+            // 也不能让整条消息因异常丢失——退化为纯文本发送。
+            // 日志按原因去重，避免有人用畸形标签刷爆控制台。
+            logParseFailure(e);
+            return Component.text(sanitized.replace("\\<", "<"));
+        }
+    }
+
+    private void logParseFailure(RuntimeException e) {
+        // 用异常类型而非完整消息作去重键：消息里包含玩家输入的标签原文，
+        // 若以它为键，有权限者可用互不相同的畸形标签让集合无限增长。
+        String reason = e.getClass().getSimpleName();
+        if (reportedFailures.size() < MAX_REPORTED_FAILURES && reportedFailures.add(reason)) {
+            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送 -> " + reason
+                    + "（同类问题仅提示一次）");
+        }
     }
 
     public String sanitize(String text, Player player) {
@@ -91,13 +119,20 @@ public final class StyleFilter {
             return false;
         }
         if (normalized.startsWith("#")) {
-            return has(player, "color-hex") && normalized.length() >= 4;
+            // 必须校验为合法的 3/6 位十六进制：非法色值会让 MiniMessage 解析抛异常，
+            // 而异常会沿整条消息的渲染链上抛，最终表现为「玩家发不出任何消息」。
+            return has(player, "color-hex") && isHexColor(normalized);
         }
         if (normalized.indexOf(':') >= 0) {
             // 带参数的标签（gradient / click / hover / font 等）一律归入高级权限
             return has(player, "advanced");
         }
-        if (normalized.equals("reset") || normalized.equals("newline")) {
+        if (normalized.equals("newline") || normalized.equals("br")) {
+            // 换行不是颜色能力：若跟随默认对所有玩家开放的 color-named，
+            // 任何人都能把一句话渲染成多行，伪造「看起来像系统/管理员发言」的内容。
+            return has(player, "advanced");
+        }
+        if (normalized.equals("reset")) {
             return has(player, "color-named") || has(player, "advanced");
         }
         if (NAMED_COLORS.contains(normalized)) {
@@ -107,6 +142,22 @@ public final class StyleFilter {
             return has(player, "decoration");
         }
         return has(player, "advanced");
+    }
+
+    /**
+     * 校验十六进制色值。MiniMessage / Adventure 只接受 6 位 {@code #rrggbb}，
+     * 3 位简写（{@code #abc}）会被判为非法并抛解析异常，因此这里也必须拒绝。
+     */
+    private static boolean isHexColor(String normalized) {
+        if (normalized.length() != 7 || normalized.charAt(0) != '#') {
+            return false;
+        }
+        for (int i = 1; i < normalized.length(); i++) {
+            if (Character.digit(normalized.charAt(i), 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean has(Player player, String key) {

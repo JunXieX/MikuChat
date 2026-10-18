@@ -49,12 +49,14 @@ public interface NetworkService {
     /**
      * 跨服聊天广播包。lineJson 为渲染完成的整行组件（Adventure Gson），
      * 接收端直接展示，保证各服风格一致且不依赖远端的权限/变量数据。
+     * <p>
+     * 不携带频道显示名：显示名是 MiniMessage 模板，若由远端提供并解析，等于给了对方
+     * 向本服注入任意组件的通道。接收端改为用本服配置里同 id 频道的显示名。
      */
     record ChatOutbound(UUID senderId,
                         String senderName,
                         String serverId,
                         String channelId,
-                        String channelDisplay,
                         String rawText,
                         String lineJson,
                         List<String> mentions,

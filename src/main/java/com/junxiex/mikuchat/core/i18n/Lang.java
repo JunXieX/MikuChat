@@ -25,16 +25,28 @@ public final class Lang {
     }
 
     public void load(String code) {
-        this.code = code;
-        String path = "lang/" + code + ".yml";
+        String requested = code == null || code.isBlank() ? "zh_CN" : code;
+        String path = "lang/" + requested + ".yml";
         File file = new File(plugin.getDataFolder(), path);
         if (!file.exists()) {
             try {
                 plugin.saveResource(path, false);
             } catch (IllegalArgumentException e) {
-                plugin.getLogger().warning("Missing language resource " + path);
+                // 配置了不存在的语言：直接回落到 zh_CN，否则所有提示都会退化成原始 key
+                plugin.getLogger().warning("语言文件 " + path + " 不存在，已回落到 zh_CN。请在 config.yml 的 language 中使用已内置的语言代码。");
+                requested = "zh_CN";
+                path = "lang/zh_CN.yml";
+                file = new File(plugin.getDataFolder(), path);
+                if (!file.exists()) {
+                    try {
+                        plugin.saveResource(path, false);
+                    } catch (IllegalArgumentException ignored) {
+                        plugin.getLogger().warning("缺少内置语言资源 " + path);
+                    }
+                }
             }
         }
+        this.code = requested;
         YamlConfiguration loaded = YamlConfiguration.loadConfiguration(file);
         try (InputStream in = plugin.getResource(path)) {
             if (in != null) {

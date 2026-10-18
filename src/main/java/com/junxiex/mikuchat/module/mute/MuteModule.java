@@ -52,8 +52,11 @@ public final class MuteModule implements ChatModule {
     @Override
     public void reload() {
         if (muteManager != null) {
-            muteManager.unsubscribe();
+            // 顺序很重要：load() 会 requestState() 请求全量快照，
+            // 若此时已 unsubscribe，代理回包的 STATE_SYNC 会因没有处理器而被丢弃，
+            // 本服缓存就停留在空/旧状态。因此先 load（旧订阅仍在，能接住快照），再重新订阅。
             muteManager.load();
+            muteManager.unsubscribe();
             muteManager.subscribe();
         }
     }

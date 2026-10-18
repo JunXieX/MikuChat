@@ -46,7 +46,7 @@ public final class WordListLoader {
 
         if (txtFile != null && txtFile.isFile()) {
             for (String raw : readAll(txtFile)) {
-                String trimmed = raw.trim();
+                String trimmed = stripBom(raw).trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                     continue;
                 }
@@ -57,7 +57,7 @@ public final class WordListLoader {
         if (ymlFile != null && ymlFile.isFile()) {
             List<String> mappingLines = new ArrayList<>();
             for (String raw : readAll(ymlFile)) {
-                String trimmed = raw.trim();
+                String trimmed = stripBom(raw).trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                     continue;
                 }
@@ -67,7 +67,9 @@ public final class WordListLoader {
                         words.add(value);
                     }
                 } else if (MAPPING_LINE.matcher(trimmed).matches()) {
-                    mappingLines.add(raw);
+                    // 存剥离后的行：若保留原始行，首行带 BOM 时 SnakeYAML 无法识别该键，
+                    // WhiteList / Replacement 会静默失效
+                    mappingLines.add(trimmed);
                 }
             }
             if (!mappingLines.isEmpty()) {
@@ -101,6 +103,19 @@ public final class WordListLoader {
         } catch (Exception e) {
             return List.of();
         }
+    }
+
+    /**
+     * 去掉行首的 UTF-8 BOM。
+     * <p>
+     * 服主常用 Windows 记事本编辑词库，若保存为「UTF-8 带 BOM」，首行会残留 {@code \uFEFF}。
+     * 该字符肉眼不可见，却会让首条词条永远匹配不到，排查成本极高。
+     */
+    private static String stripBom(String line) {
+        if (line != null && !line.isEmpty() && line.charAt(0) == '\uFEFF') {
+            return line.substring(1);
+        }
+        return line == null ? "" : line;
     }
 
     private static String unquote(String value) {

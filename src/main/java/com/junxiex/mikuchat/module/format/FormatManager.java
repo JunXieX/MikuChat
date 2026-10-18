@@ -26,6 +26,8 @@ public final class FormatManager implements FormatService {
     private final ConfigFile config;
     private final TemplateRenderer renderer;
     private volatile List<FormatRule> rules = List.of();
+    /** 频道显示名（原始 MiniMessage 字符串）到已解析组件的缓存，避免每条消息重复解析。 */
+    private final Map<String, Component> channelCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public FormatManager(MikuChat plugin) {
         this.plugin = plugin;
@@ -47,6 +49,8 @@ public final class FormatManager implements FormatService {
         }
         loaded.sort(Comparator.comparingInt(FormatRule::priority).reversed());
         this.rules = loaded;
+        // 频道显示名可能随 channels/*.yml 改动而变化，重载时清空缓存
+        channelCache.clear();
     }
 
     @Override
@@ -55,8 +59,30 @@ public final class FormatManager implements FormatService {
         String template = rule == null ? FALLBACK : rule.format();
         Map<String, Component> extras = new HashMap<>();
         extras.put("message", body);
-        extras.put("channel", com.junxiex.mikuchat.core.text.TextUtil.parse(channel.displayName()));
+        extras.put("channel", channelComponent(channel.displayName()));
         return renderer.render(template, sender, extras);
+    }
+
+    /**
+     * 频道显示名到组件的缓存。
+     * <p>
+     * 显示名是固定模板，但每条消息都要用到；此前每条消息都做一次完整的 MiniMessage 解析，
+     * 在多人高频聊天时是纯粹的重复开销。这里按原始字符串缓存，配置重载后清空。
+     */
+    private Component channelComponent(String displayName) {
+        String key = displayName == null ? "" : displayName;
+        return channelCache.computeIfAbsent(key, com.junxiex.mikuchat.core.text.TextUtil::parse);
+    }
+
+    /**
+     * 清空频道显示名缓存。
+     * <p>
+     * 显示名来自 channels/*.yml，由 channel 模块加载；`/mchat reload channel` 只重载
+     * 频道配置、不会触发本模块的 load()，因此需要由频道模块在重载后显式通知，
+     * 否则聊天行里的频道名会一直停留在旧样式。
+     */
+    public void invalidateChannelCache() {
+        channelCache.clear();
     }
 
     /**

@@ -6,6 +6,8 @@ import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
+import java.util.List;
+
 /**
  * 文本工具：统一 MiniMessage / Gson / 纯文本序列化入口。
  */
@@ -60,6 +62,25 @@ public final class TextUtil {
             return "";
         }
         return input.replace("\\", "\\\\").replace("<", "\\<");
+    }
+
+    /**
+     * 递归剥离组件树中的 click / hover 交互事件，保留文本内容与颜色样式。
+     * <p>
+     * 用于所有来自跨服信任边界的组件：交互事件由发送端按它自己的权限策略放行，
+     * 接收端若不剥离，等于让对端决定本服玩家能点到什么（如点击执行指令）。
+     */
+    public static Component stripInteractive(Component component) {
+        if (component == null) {
+            return Component.empty();
+        }
+        // style(...) 只替换样式，保留该组件自身的文本内容与子组件
+        Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
+        List<Component> children = result.children();
+        if (children.isEmpty()) {
+            return result;
+        }
+        return result.children(children.stream().map(TextUtil::stripInteractive).toList());
     }
 
     /** 按字符数截断，并避免把代理对（emoji）从中间截断产生非法字符。 */

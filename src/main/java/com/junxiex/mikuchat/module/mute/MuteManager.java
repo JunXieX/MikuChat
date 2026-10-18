@@ -58,10 +58,12 @@ public final class MuteManager implements MuteService {
         purgeExpired();
         NetworkService network = network();
         if (network != null && network.available()) {
-            // 先把本地独有的禁言回填到代理端，再请求全量状态：代理端按序处理，
-            // 回填内容会包含在随后下发的 STATE_SYNC 中，不会出现互相覆盖。
-            uploadLocalToShared();
-            network.requestState();
+            // 必须先完成回填再请求全量快照：两条消息都经由玩家连接异步发出，
+            // 若顺序颠倒，STATE_SYNC 可能先于 KV_SET 到达代理，随后下发的快照不含本地
+            // 独有的禁言，缓存被覆盖后连本地文件也会被同步成「无记录」，数据就此丢失。
+            if (uploadLocalToShared()) {
+                network.requestState();
+            }
         }
     }
 
@@ -98,20 +100,28 @@ public final class MuteManager implements MuteService {
             cache.clear();
             cache.putAll(loaded);
             purgeExpired();
+            // 关键：把权威结果回写到本地回落文件。否则本文件里的旧记录会在下次
+            // load() 时被当作「本地独有禁言」重新回填给代理，使已解除的禁言复活。
+            syncLocalFileToCache();
         } catch (Throwable t) {
             plugin.debug("解析共享状态失败: " + t.getMessage());
         }
     }
 
-    /** 代理端可用时，把仅存在于本地的禁言回填到共享存储，避免以其为源导致跨服不同步。 */
-    private void uploadLocalToShared() {
+    /**
+     * 代理端可用时，把仅存在于本地的禁言回填到共享存储，避免以其为源导致跨服不同步。
+     *
+     * @return 是否已提交回填（代理不可用时为 false）
+     */
+    private boolean uploadLocalToShared() {
         NetworkService network = network();
         if (network == null || !network.available()) {
-            return;
+            return false;
         }
         for (Map.Entry<UUID, MuteInfo> entry : cache.entrySet()) {
             network.hashSet(MUTE_HASH_KEY, entry.getKey().toString(), serialize(entry.getValue()));
         }
+        return true;
     }
 
     private void loadLocalFile() {
@@ -189,7 +199,12 @@ public final class MuteManager implements MuteService {
             network.hashDelete(MUTE_HASH_KEY, uuid.toString());
         }
         saveLocal(uuid, null);
-        publish(uuid, null, true);
+        // 只在本地确实有记录时广播：否则对未被禁言的玩家也会让全网做一次无意义删除
+        if (removed) {
+            publish(uuid, null, true);
+        }
+        // 只按本地缓存判断：hashDelete 是幂等删除，代理可用并不能证明「本来确实有禁言」。
+        // 若用 networkReady 兜底，生产环境下对未被禁言的玩家也会提示「已解除禁言」，属必然误报。
         return removed;
     }
 
@@ -207,6 +222,13 @@ public final class MuteManager implements MuteService {
         network.publish(MUTE_UPDATE_TYPE, payload);
     }
 
+    /**
+     * 处理其它服务器发来的禁言变更。
+     * <p>
+     * 必须同步维护 {@code mute.yml}：本地回落文件在 {@link #load()} 时会被当作
+     * 「本地独有禁言」回填给代理，若这里只改内存不落盘，别的服务器解除禁言后本服文件
+     * 仍保留旧记录，重启或 reload 时就会把它重新推回共享存储，让已解除的禁言复活。
+     */
     private void handleUpdate(String json) {
         Map<String, String> payload = parseJson(json);
         if (payload == null) {
@@ -220,10 +242,12 @@ public final class MuteManager implements MuteService {
             UUID uuid = UUID.fromString(uuidString);
             if (Boolean.parseBoolean(payload.get("remove"))) {
                 cache.remove(uuid);
+                saveLocal(uuid, null);
             } else {
                 MuteInfo info = parse(payload.get("value"));
                 if (info != null) {
                     cache.put(uuid, info);
+                    saveLocal(uuid, payload.get("value"));
                 }
             }
         } catch (IllegalArgumentException ignored) {
@@ -270,7 +294,13 @@ public final class MuteManager implements MuteService {
         cache.entrySet().removeIf(entry -> entry.getValue().expired());
     }
 
-    /** 周期清理：把已过期禁言从本地缓存、共享存储与回落文件中一并移除。 */
+    /**
+     * 周期清理：把已过期禁言从本地缓存、共享存储与回落文件中一并移除。
+     * <p>
+     * 过期禁言对玩家已无约束力（{@link #muteOf} 本就把过期记录视为未禁言），因此这里只需要
+     * 清掉残留数据，不需要再逐个 {@code publish} 广播：每 5 分钟一次全量广播既浪费插件消息带宽，
+     * 也会让其它服务器做无意义的缓存写入。共享存储用 {@code hashDelete} 同步删除即可。
+     */
     public void purge() {
         List<UUID> expired = new ArrayList<>();
         for (Map.Entry<UUID, MuteInfo> entry : cache.entrySet()) {
@@ -278,9 +308,43 @@ public final class MuteManager implements MuteService {
                 expired.add(entry.getKey());
             }
         }
-        for (UUID uuid : expired) {
-            unmute(uuid);
+        if (expired.isEmpty()) {
+            return;
         }
+        NetworkService network = network();
+        boolean networkReady = network != null && network.available();
+        for (UUID uuid : expired) {
+            // 先移除缓存：即便后续 I/O 失败，玩家也不会因过期记录被继续拦下
+            if (cache.remove(uuid) == null) {
+                continue;
+            }
+            if (networkReady) {
+                network.hashDelete(MUTE_HASH_KEY, uuid.toString());
+            }
+            saveLocal(uuid, null);
+        }
+    }
+
+    /**
+     * 用当前缓存整体重写 {@code mute.yml}，使本地回落文件与代理端权威状态保持一致。
+     * <p>
+     * 写入集中在单线程执行器，避免与 {@link #saveLocal} 的单条写入交叉导致文件错乱；
+     * 整份重写而不是逐条删除，能一并清掉代理端已不存在的历史记录。
+     */
+    private void syncLocalFileToCache() {
+        Map<UUID, MuteInfo> snapshot = new HashMap<>(cache);
+        submitLocalWrite(() -> {
+            File file = new File(plugin.getDataFolder(), "mute.yml");
+            YamlConfiguration yaml = new YamlConfiguration();
+            for (Map.Entry<UUID, MuteInfo> entry : snapshot.entrySet()) {
+                yaml.set("mutes." + entry.getKey(), serialize(entry.getValue()));
+            }
+            try {
+                com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);
+            } catch (Exception e) {
+                plugin.getLogger().warning("同步 mute.yml 失败: " + e.getMessage());
+            }
+        });
     }
 
     /** 关闭本地回落文件的写入线程，供模块停用时调用。等待已排队的写入落盘，避免停服瞬间丢数据。 */

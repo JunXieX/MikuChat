@@ -26,6 +26,13 @@ public final class AsyncFileWriter {
 
     private final MikuChat plugin;
     private final Map<Path, BufferedWriter> writers = new HashMap<>();
+    /**
+     * 最近使用过的文件路径（LRU）。日志按天分文件，跨天后全是新路径，若句柄只增不减，
+     * 长期运行会每天泄漏句柄，Windows 上旧日志还会因仍被占用而无法被保留策略删除。
+     * 仅在写线程内访问，无需额外同步。
+     */
+    private static final int MAX_OPEN_FILES = 8;
+    private final java.util.Deque<Path> recentOrder = new java.util.ArrayDeque<>();
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "MikuChat-FileWriter");
@@ -59,6 +66,11 @@ public final class AsyncFileWriter {
                 writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 writers.put(path, writer);
+                touch(path);
+                evictStaleWriters(path);
+            } else {
+                // 已打开的路径也要刷新 LRU 位置，否则活跃文件可能被误判为空闲而关闭
+                touch(path);
             }
             writer.write(line);
             writer.newLine();
@@ -67,6 +79,29 @@ public final class AsyncFileWriter {
             // 句柄可能已失效（文件被外部删除/移动），移除后由下次写入重建
             closeQuietly(writers.remove(path));
             plugin.getLogger().warning("Failed to write " + path + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * 记录路径的最近使用顺序。日志按天分文件，跨天后全是新路径：
+     * 若句柄一直留着，长期运行会每天泄漏句柄，且 Windows 上旧日志因仍被占用而删不掉。
+     * 这里维护一个很小的 LRU（只保留最近活跃的少数几个路径），写入线程是单线程，无需额外同步。
+     */
+    private void touch(Path path) {
+        recentOrder.remove(path);
+        recentOrder.addLast(path);
+    }
+
+    private void evictStaleWriters(Path keep) {
+        while (recentOrder.size() > MAX_OPEN_FILES) {
+            Path oldest = recentOrder.peekFirst();
+            if (oldest == null) {
+                return;
+            }
+            recentOrder.removeFirst();
+            if (!oldest.equals(keep)) {
+                closeQuietly(writers.remove(oldest));
+            }
         }
     }
 
@@ -107,5 +142,6 @@ public final class AsyncFileWriter {
             closeQuietly(writer);
         }
         writers.clear();
+        recentOrder.clear();
     }
 }

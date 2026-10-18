@@ -5,6 +5,7 @@ import com.junxiex.mikuchat.core.service.ChannelService;
 import com.junxiex.mikuchat.core.service.ChannelView;
 import com.junxiex.mikuchat.core.service.ChatLogService;
 import com.junxiex.mikuchat.core.service.NetworkService;
+import com.junxiex.mikuchat.core.text.TextUtil;
 import com.junxiex.mikuchat.module.channel.ChannelManager;
 import com.junxiex.mikuchat.module.filter.FilterManager;
 import com.junxiex.mikuchat.module.mention.MentionManager;
@@ -97,10 +98,13 @@ public final class MikuChatCommand implements BasicCommand {
             if (sub.permission() != null && !sender.hasPermission(sub.permission())) {
                 continue;
             }
+            // usage / description 是纯文本，必须先转义再拼进模板：
+            // usage 形如 "/mchat log <玩家|关键词>"，不转义会被 MiniMessage 当作标签处理，
+            // 导致帮助里显示的用法残缺甚至整段丢失。模板本身仍按 MiniMessage 解析。
             sender.sendMessage(plugin.lang().parse(plugin.lang().raw("command.help-line")
-                    .replace("{command}", sub.usage())
-                    .replace("{usage}", sub.usage())
-                    .replace("{description}", sub.description())));
+                    .replace("{command}", TextUtil.escape(sub.usage()))
+                    .replace("{usage}", TextUtil.escape(sub.usage()))
+                    .replace("{description}", TextUtil.escape(sub.description()))));
         }
     }
 

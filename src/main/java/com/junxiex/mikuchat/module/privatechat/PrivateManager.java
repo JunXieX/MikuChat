@@ -147,9 +147,12 @@ public final class PrivateManager {
         Player localTarget = findLocal(targetName);
         if (localTarget != null) {
             replyTargets.put(sender.getUniqueId(), localTarget.getName());
+            // 接收方同样要能 /reply 回来：replyTargets 是两个方向的会话指针，
+            // 只写发送方会导致「A 发给 B 后，B 用 /reply 提示没有回复对象」。
+            replyTargets.put(localTarget.getUniqueId(), sender.getName());
             plugin.scheduler().atEntity(sender, () -> sender.sendMessage(senderLine));
             plugin.scheduler().atEntity(localTarget, () -> localTarget.sendMessage(receiverLine));
-            dispatchSpy(spyLine, sender.getUniqueId());
+            dispatchSpy(spyLine, sender.getUniqueId(), localTarget.getUniqueId());
             log(sender.getName(), localTarget.getName(), content, false);
             notifyMentions(sender.getUniqueId(), composed.mentions());
             return;
@@ -186,7 +189,7 @@ public final class PrivateManager {
             pending.put(id, new PendingDelivery(sender, targetName, senderLine, finalContent));
             network.publish(TYPE_PRIVATE, new PrivatePacket(id, sender.getUniqueId(), sender.getName(),
                     targetName, owners.get(0), TextUtil.toJson(receiverLine), finalContent,
-                    System.currentTimeMillis()));
+                    composed.mentions(), System.currentTimeMillis()));
             plugin.scheduler().asyncLater(() -> {
                 PendingDelivery delivery = pending.remove(id);
                 if (delivery != null && delivery.sender().isOnline()) {
@@ -214,7 +217,7 @@ public final class PrivateManager {
         } catch (Throwable t) {
             return;
         }
-        if (packet == null || packet.targetName() == null) {
+        if (packet == null || packet.targetName() == null || packet.receiverLine() == null) {
             return;
         }
         // 定向投递：若发送端已指明目标所在服务器，其它服务器不得重复投递
@@ -228,6 +231,11 @@ public final class PrivateManager {
         if (target == null) {
             return;
         }
+        // 跨服内容来自信任边界之外：先做体积校验再解析，避免超大组件先被反序列化进内存
+        if (packet.receiverLine().length() > MAX_REMOTE_LINE_LENGTH) {
+            plugin.debug("丢弃体积异常的跨服私聊组件: " + packet.senderName());
+            return;
+        }
         Component receiverLine;
         try {
             receiverLine = TextUtil.fromJson(packet.receiverLine());
@@ -235,21 +243,23 @@ public final class PrivateManager {
             plugin.debug("解析跨服私聊失败: " + t.getMessage());
             return;
         }
-        // 跨服内容来自信任边界之外：限制体积，并剥离组件中的 click / hover 交互事件，
-        // 防止被攻陷的对端借私聊向本服玩家注入点击执行指令等恶意组件。
-        // 注意这里只剥离、不丢弃：@ 提醒与 [item] 展示本身就会带上交互事件，
-        // 若整条丢弃，含这些标记的跨服私聊会静默消失、双方都收不到任何提示。
-        if (packet.receiverLine().length() > MAX_REMOTE_LINE_LENGTH) {
-            plugin.debug("丢弃体积异常的跨服私聊组件: " + packet.senderName());
+        if (receiverLine == null) {
             return;
         }
-        final Component safeLine = stripInteractive(receiverLine);
+        // 跨服组件不可信：剥离 click / hover 交互事件，防止对端借私聊向本服玩家注入
+        // 点击执行指令等恶意组件。这里只剥离、不丢弃：@ 提醒与 [item] 展示本身就会带上
+        // 交互事件，若整条丢弃，含这些标记的跨服私聊会静默消失、双方都收不到任何提示。
+        final Component safeLine = TextUtil.stripInteractive(receiverLine);
         plugin.scheduler().atEntity(target, () -> target.sendMessage(safeLine));
-        dispatchSpy(safeLine, packet.senderId());
-        notifyMentions(packet.senderId(), null);
-        log(packet.senderName(), target.getName(), packet.rawText(), true);
+        // 接收方也要能 /reply 回来：跨服场景下发送方的回复指针由 ACK 写入，
+        // 接收方这一侧必须在投递时补上，否则 B 回不了 A，只能提示「没有回复对象」。
+        replyTargets.put(target.getUniqueId(), packet.safeSenderName());
+        dispatchSpy(safeLine, packet.senderId(), target.getUniqueId());
+        // 跨服私聊里的 @ 提醒由接收端触发：发送端的本地提醒覆盖不到另一台服务器的玩家
+        notifyMentions(packet.senderId(), packet.safeMentions());
+        log(packet.safeSenderName(), target.getName(), packet.safeRawText(), true);
         plugin.services().find(NetworkService.class)
-                .ifPresent(network -> network.publish(TYPE_ACK, Map.of("id", packet.id())));
+                .ifPresent(network -> network.publish(TYPE_ACK, Map.of("id", String.valueOf(packet.id()))));
     }
 
     private void onAck(String json) {
@@ -261,6 +271,10 @@ public final class PrivateManager {
         try {
             id = gson.fromJson(json, AckPacket.class).id();
         } catch (Throwable t) {
+            return;
+        }
+        // 缺 id 的包（异构/旧版节点）会让 ConcurrentHashMap.remove(null) 抛 NPE
+        if (id == null) {
             return;
         }
         PendingDelivery delivery = pending.remove(id);
@@ -283,10 +297,11 @@ public final class PrivateManager {
         }
     }
 
-    private void dispatchSpy(Component line, UUID senderId) {
+    /** 转发给开启监听的在线管理员；发送者与接收者本人都不应收到自己的私聊副本。 */
+    private void dispatchSpy(Component line, UUID senderId, UUID receiverId) {
         String permission = config.config().getString("permissions.spy", "mikuchat.private.spy");
         for (Player online : Bukkit.getOnlinePlayers()) {
-            if (online.getUniqueId().equals(senderId)) {
+            if (online.getUniqueId().equals(senderId) || online.getUniqueId().equals(receiverId)) {
                 continue;
             }
             if (!online.hasPermission(permission)
@@ -332,17 +347,6 @@ public final class PrivateManager {
         return null;
     }
 
-    /** 递归剥离组件树中的 click / hover 交互事件，保留文本内容与颜色样式。 */
-    private Component stripInteractive(Component component) {
-        // style(...) 只替换样式，保留该组件自身的文本内容与子组件
-        Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
-        List<Component> children = component.children();
-        if (children.isEmpty()) {
-            return result;
-        }
-        return result.children(children.stream().map(this::stripInteractive).toList());
-    }
-
     public String replyTarget(Player player) {
         return replyTargets.get(player.getUniqueId());
     }
@@ -362,9 +366,29 @@ public final class PrivateManager {
         replyTargets.remove(uuid);
     }
 
-    /** 跨服私聊包。targetServer 为空表示未定向（兼容旧版本节点，收到即投递）。 */
+    /**
+     * 跨服私聊包。targetServer 为空表示未定向（兼容旧版本节点，收到即投递）。
+     * <p>
+     * {@code mentions} 用于接收端补发 @ 提醒：发送端本地的提醒只覆盖本服玩家，
+     * 目标玩家在另一台服务器，必须由接收端触发，否则跨服私聊里的 @ 永远不会有提示。
+     */
     public record PrivatePacket(String id, UUID senderId, String senderName, String targetName,
-                                String targetServer, String receiverLine, String rawText, long timestamp) {
+                                String targetServer, String receiverLine, String rawText,
+                                List<String> mentions, long timestamp) {
+
+        /** 兼容旧版本节点发来的、不带 mentions 字段的包（Gson 会把缺失字段置为 null）。 */
+        public List<String> safeMentions() {
+            return mentions == null ? List.of() : mentions;
+        }
+
+        /** 缺字段时给出空串，避免拼接日志时 String.replace 收到 null 抛 NPE。 */
+        public String safeSenderName() {
+            return senderName == null ? "" : senderName;
+        }
+
+        public String safeRawText() {
+            return rawText == null ? "" : rawText;
+        }
     }
 
     private record AckPacket(String id) {

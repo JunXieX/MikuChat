@@ -11,6 +11,7 @@ import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +35,8 @@ public final class SharedStore {
     private final Logger logger;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private final Map<String, Map<String, String>> data = new ConcurrentHashMap<>();
+    /** 是否已有待执行的落盘任务（用于合并高频写入）。 */
+    private final java.util.concurrent.atomic.AtomicBoolean dirty = new java.util.concurrent.atomic.AtomicBoolean();
     private final ExecutorService writer = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "MikuChat-State-Writer");
         thread.setDaemon(true);
@@ -66,11 +69,20 @@ public final class SharedStore {
     }
 
     public void put(String key, String field, String value) {
+        // ConcurrentHashMap 不接受 null：后端若发来缺字段的包会抛 NPE，
+        // 而外层 dispatch 的 catch 会吞掉整条消息，表现为「禁言跨服静默失效」。这里显式拒绝。
+        if (key == null || field == null || value == null) {
+            logger.warn("忽略字段不完整的共享状态写入：key={}, field={}", key, field);
+            return;
+        }
         data.computeIfAbsent(key, k -> new ConcurrentHashMap<>()).put(field, value);
         persist();
     }
 
     public void remove(String key, String field) {
+        if (key == null || field == null) {
+            return;
+        }
         Map<String, String> values = data.computeIfAbsent(key, k -> new ConcurrentHashMap<>());
         if (values.remove(field) != null) {
             persist();
@@ -94,13 +106,40 @@ public final class SharedStore {
         }
     }
 
+    /**
+     * 请求落盘：只保证「最终会写一次最新全量」，不保证每次调用都单独写。
+     * <p>
+     * 原来每次 put/remove 都往单线程执行器塞一个全量快照任务：后端启动回填 1000 条禁言时
+     * 会排队 1000 次全量序列化（O(n²) I/O），既慢又无意义。这里改为写时合并：
+     * 已有待执行任务时只标记脏，由该任务在真正落盘前读取最新快照。
+     */
     private void persist() {
-        Map<String, Map<String, String>> copy = snapshot();
+        if (!dirty.compareAndSet(false, true)) {
+            return;
+        }
         writer.execute(() -> {
+            // 先清标记再取快照：若期间又有写入，会重新置脏并再排一个任务
+            dirty.set(false);
+            Map<String, Map<String, String>> copy = snapshot();
             try {
                 Files.createDirectories(file.getParent());
-                try (Writer out = Files.newBufferedWriter(file, StandardCharsets.UTF_8)) {
-                    gson.toJson(copy, DATA_TYPE, out);
+                // 原子写：这是跨服禁言的唯一权威数据，直接截断写会在进程被 kill 时
+                // 留下半截 JSON——load() 只记一条 warn 就以空状态启动，随后覆盖，数据不可恢复。
+                Path temp = Files.createTempFile(file.getParent(), "shared-state", ".tmp");
+                try {
+                    try (Writer out = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                        gson.toJson(copy, DATA_TYPE, out);
+                    }
+                    try {
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                    } catch (java.nio.file.FileSystemException e) {
+                        // Windows 上目标被短暂占用时抛的是 FileSystemException，退化为普通替换
+                        Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temp);
                 }
             } catch (Throwable t) {
                 logger.warn("保存共享状态失败：{}", t.getMessage());
