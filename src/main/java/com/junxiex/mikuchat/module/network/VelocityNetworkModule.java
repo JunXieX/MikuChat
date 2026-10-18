@@ -59,6 +59,15 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     /** 去重窗口：代理端可能通过多条连接重复投递同一条消息。 */
     private static final int SEEN_CAPACITY = 512;
 
+    /**
+     * 代理端自身发出的消息所使用的来源标识，与 Velocity 端 {@code ProxyBridge} 保持一字不差。
+     * <p>
+     * 代理端的 {@code WHO_RES} / {@code STATE_SYNC} 都由它发出，因此白名单校验必须显式放行它，
+     * 否则一旦服主按 network.yml 的建议填了 {@code trusted-servers}，跨服在线查询与禁言同步
+     * 会被本插件自己丢掉，表现为「查询一直无响应、禁言不跨服」。
+     */
+    private static final String PROXY_SOURCE = "__proxy__";
+
     private final MikuChat plugin;
     private final ConfigFile config;
     private final Gson gson = new Gson();
@@ -298,8 +307,13 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             if (source.equals(serverId())) {
                 return;
             }
-            // 配置了白名单时，只信任名单内的来源服务器，拒绝伪造/未知来源的插件消息
-            if (!trustedServers.isEmpty() && !trustedServers.contains(source)) {
+            // 配置了白名单时，只信任名单内的来源服务器，拒绝伪造/未知来源的插件消息。
+            // 代理端自身的应答（WHO_RES / STATE_SYNC）来源固定为 PROXY_SOURCE，必须放行，
+            // 否则填了 trusted-servers 反而会让跨服查询与禁言同步全部失效。
+            // 只对代理端确实自产的这两种类型放行，避免其它类型借 PROXY_SOURCE 绕过白名单。
+            boolean fromProxy = PROXY_SOURCE.equals(source)
+                    && (TYPE_WHO_RES.equals(type) || TYPE_STATE_SYNC.equals(type));
+            if (!trustedServers.isEmpty() && !fromProxy && !trustedServers.contains(source)) {
                 plugin.debug("已忽略来自非受信服务器 " + source + " 的跨服消息 " + type);
                 return;
             }

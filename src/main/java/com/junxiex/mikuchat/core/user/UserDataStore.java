@@ -44,7 +44,7 @@ public final class UserDataStore implements AutoCloseable {
         if (closed) {
             return;
         }
-        executor.execute(() -> values(uuid));
+        submit(() -> values(uuid));
     }
 
     public boolean getBoolean(UUID uuid, String key, boolean defaultValue) {
@@ -66,7 +66,7 @@ public final class UserDataStore implements AutoCloseable {
         }
         // 先在并发表中即时生效，再排队落盘；落盘只读该表，避免跨线程共享可变对象
         values(uuid).put(key, value);
-        executor.execute(() -> save(uuid));
+        submit(() -> save(uuid));
     }
 
     /**
@@ -77,7 +77,22 @@ public final class UserDataStore implements AutoCloseable {
         if (closed) {
             return;
         }
-        executor.execute(() -> cache.remove(uuid));
+        submit(() -> cache.remove(uuid));
+    }
+
+    /**
+     * 提交落盘任务。
+     * <p>
+     * {@code closed} 的判断与 {@code execute} 之间存在竞态：停服瞬间关闭标记刚置位、
+     * 执行器已 shutdown 时，直接 execute 会抛 {@link java.util.concurrent.RejectedExecutionException}
+     * 并沿调用栈冒到聊天/命令线程。这里统一吞掉这种关闭期提交。
+     */
+    private void submit(Runnable task) {
+        try {
+            executor.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // 插件正在停用，丢弃本次落盘请求
+        }
     }
 
     private ConcurrentHashMap<String, Object> values(UUID uuid) {
