@@ -36,6 +36,8 @@ public final class StyleFilter {
 
     private final ConfigFile config;
     private final MikuChat plugin;
+    /** 已报告过的解析失败原因，避免同一种畸形标签反复刷日志。 */
+    private final java.util.Set<String> reportedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
     // 权限串与开关在 load 时解析一次，避免每条消息反复查配置
     private volatile boolean escapeByDefault = true;
     private volatile java.util.Map<String, String> permissions = java.util.Map.of();
@@ -62,8 +64,16 @@ public final class StyleFilter {
         } catch (RuntimeException e) {
             // 兜底：即便有权限的玩家写出了 MiniMessage 无法解析的标签（如非法参数），
             // 也不能让整条消息因异常丢失——退化为纯文本发送。
-            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送: " + e.getMessage());
+            // 日志按原因去重，避免有人用畸形标签刷爆控制台。
+            logParseFailure(e);
             return Component.text(sanitized.replace("\\<", "<"));
+        }
+    }
+
+    private void logParseFailure(RuntimeException e) {
+        String reason = e.getClass().getSimpleName() + ": " + e.getMessage();
+        if (reportedFailures.add(reason)) {
+            plugin.getLogger().warning("消息样式解析失败，已按纯文本发送 -> " + reason);
         }
     }
 
