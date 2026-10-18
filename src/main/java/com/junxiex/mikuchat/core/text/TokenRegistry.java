@@ -21,13 +21,20 @@ public final class TokenRegistry {
     private volatile Snapshot snapshot;
 
     public void register(ChatTokenHandler handler) {
-        handlers.add(handler);
-        invalidate();
+        // 与 snapshotOrRebuild() 共用同一把锁：否则构建线程可能已读取旧的 handlers
+        // 列表、在锁外被挂起，随后这里完成修改并置空快照，构建线程再把旧快照写回，
+        // 使新注册的处理器直到下一次注册/注销才生效。
+        synchronized (this) {
+            handlers.add(handler);
+            snapshot = null;
+        }
     }
 
     public void unregister(ChatTokenHandler handler) {
-        handlers.remove(handler);
-        invalidate();
+        synchronized (this) {
+            handlers.remove(handler);
+            snapshot = null;
+        }
     }
 
     /**
@@ -73,11 +80,6 @@ public final class TokenRegistry {
         return null;
     }
 
-    private void invalidate() {
-        // 单次 volatile 写入即完成失效，读线程要么看到旧快照要么看到 null（随后重建）
-        snapshot = null;
-    }
-
     /** 组合快照只构建一次；没有任何处理器时也缓存空快照，避免每条消息重复进入同步块。 */
     private Snapshot snapshotOrRebuild() {
         Snapshot current = snapshot;
@@ -104,9 +106,46 @@ public final class TokenRegistry {
             if (builder.length() > 0) {
                 builder.append('|');
             }
-            builder.append("(?:").append(handler.pattern().pattern()).append(')');
+            Pattern pattern = handler.pattern();
+            // 必须连同 flags 一起合并：Pattern#pattern() 只返回正则文本，
+            // 直接拼接会丢掉 CASE_INSENSITIVE 等标志。例如 [item] 的处理器声明了
+            // 大小写不敏感，若丢弃标志，[ITEM] / [Inv] 这类写法就完全不会被识别。
+            // 用内联标志组把 flags 限定在该处理器自己的分支内，不污染其它分支。
+            String flags = inlineFlags(pattern.flags());
+            if (flags.isEmpty()) {
+                builder.append("(?:").append(pattern.pattern()).append(')');
+            } else {
+                builder.append("(?").append(flags).append(':').append(pattern.pattern()).append(')');
+            }
         }
         return new Snapshot(Pattern.compile(builder.toString()), List.copyOf(handlers));
+    }
+
+    /** 把 {@link Pattern} 的 flags 转成内联标志字母；无法内联表达的位直接忽略。 */
+    private static String inlineFlags(int flags) {
+        StringBuilder letters = new StringBuilder(4);
+        if ((flags & Pattern.CASE_INSENSITIVE) != 0) {
+            letters.append('i');
+        }
+        if ((flags & Pattern.MULTILINE) != 0) {
+            letters.append('m');
+        }
+        if ((flags & Pattern.DOTALL) != 0) {
+            letters.append('s');
+        }
+        if ((flags & Pattern.UNICODE_CASE) != 0) {
+            letters.append('u');
+        }
+        if ((flags & Pattern.COMMENTS) != 0) {
+            letters.append('x');
+        }
+        if ((flags & Pattern.UNICODE_CHARACTER_CLASS) != 0) {
+            letters.append('U');
+        }
+        if ((flags & Pattern.UNIX_LINES) != 0) {
+            letters.append('d');
+        }
+        return letters.toString();
     }
 
     /** 一次构建产物：组合正则与与之匹配的处理器快照。 */

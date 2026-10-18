@@ -155,8 +155,13 @@ public final class FilterManager implements FilterService {
 
     public boolean scanAdvertisement(String text) {
         State current = state;
-        FilterProfile profile = current.profiles().getOrDefault(current.defaultProfile(),
-                current.profiles().values().stream().findFirst().orElse(null));
+        // 与 profileFor 保持一致：profile 的 key 在加载时统一小写，
+        // 这里若用原始大小写的 defaultProfile 查找，配置写成大写时会取不到而回落到首个 profile。
+        FilterProfile profile = current.profiles().get(current.defaultProfile().toLowerCase(java.util.Locale.ROOT));
+        if (profile == null) {
+            profile = current.profiles().getOrDefault(current.defaultProfile(),
+                    current.profiles().values().stream().findFirst().orElse(null));
+        }
         return profile != null && profile.advertisementEnabled() && profile.adDetector().isAdvertisement(text);
     }
 
