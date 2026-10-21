@@ -24,6 +24,13 @@ public final class StyleFilter {
      */
     private static final Pattern TAG = Pattern.compile("<([^<>\r\n]*)>");
 
+    /**
+     * 传统 {@code §} 色码（{@code §} 后跟颜色/格式代码，含 {@code §x§R§R§G§G§B§B} 写法）。
+     * 它不属于 MiniMessage，却仍会被客户端渲染：不剥离就等于绕过样式权限，
+     * 玩家可以不经过任何权限判定给文字上色/加粗。
+     */
+    private static final Pattern SECTION_CODES = Pattern.compile("§[0-9a-fk-orA-FK-ORxX]");
+
     private static final Set<String> NAMED_COLORS = Set.of(
             "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
             "gold", "gray", "grey", "dark_gray", "dark_grey", "blue", "green", "aqua",
@@ -86,14 +93,17 @@ public final class StyleFilter {
         if (text == null || text.isEmpty()) {
             return "";
         }
+        // 控制字符清洗必须早于 escapeByDefault 判定：§ 色码与换行不属于「样式能力」，
+        // 而是绕过样式权限、伪造多行/日志行注入的手段，无论是否开启默认转义都必须清洗。
+        String cleaned = stripControlChars(text);
         if (!escapeByDefault) {
-            return text;
+            return cleaned;
         }
-        StringBuilder out = new StringBuilder(text.length() + 16);
-        Matcher matcher = TAG.matcher(text);
+        StringBuilder out = new StringBuilder(cleaned.length() + 16);
+        Matcher matcher = TAG.matcher(cleaned);
         int last = 0;
         while (matcher.find()) {
-            out.append(escapePlain(text.substring(last, matcher.start())));
+            out.append(escapePlain(cleaned.substring(last, matcher.start())));
             String inner = matcher.group(1);
             if (isAllowed(inner, player)) {
                 out.append(matcher.group());
@@ -102,8 +112,23 @@ public final class StyleFilter {
             }
             last = matcher.end();
         }
-        out.append(escapePlain(text.substring(last)));
+        out.append(escapePlain(cleaned.substring(last)));
         return out.toString();
+    }
+
+    /**
+     * 清洗与样式权限无关的控制字符：删除 § 传统色码，把回车/换行替换为空格。
+     * <p>
+     * 换行若原样保留，玩家可用一条聊天伪造出「多行」内容（冒充系统公告），
+     * 也会把聊天日志拆成多行、破坏日志行注入防护；{@code \r\n} 视为一个换行，
+     * 避免 CRLF 被替换成两个空格。
+     */
+    private static String stripControlChars(String text) {
+        String cleaned = SECTION_CODES.matcher(text).replaceAll("");
+        if (cleaned.indexOf('\r') < 0 && cleaned.indexOf('\n') < 0) {
+            return cleaned;
+        }
+        return cleaned.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ');
     }
 
     private boolean isAllowed(String inner, Player player) {

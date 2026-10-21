@@ -5,7 +5,10 @@ import com.junxiex.mikuchat.core.config.ConfigFile;
 import com.junxiex.mikuchat.core.service.ChannelView;
 import com.junxiex.mikuchat.core.service.FormatService;
 import com.junxiex.mikuchat.core.text.TemplateRenderer;
+import com.junxiex.mikuchat.core.text.TextUtil;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
 
@@ -14,6 +17,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 格式管理器：按 priority 从高到低匹配规则。
@@ -21,6 +25,10 @@ import java.util.Map;
 public final class FormatManager implements FormatService {
 
     private static final String FALLBACK = "<gray>%player% <dark_gray>»<white> <message>";
+    /** 预校验模板时用于替代 <message> / <channel> 的占位符，避免合法模板被误判为未知标签。 */
+    private static final TagResolver FORMAT_PLACEHOLDERS = createFormatPlaceholders();
+    /** 失败告警的去重上限，避免配置写坏时把控制台刷爆。 */
+    private static final int MAX_REPORTED_FAILURES = 32;
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -28,6 +36,8 @@ public final class FormatManager implements FormatService {
     private volatile List<FormatRule> rules = List.of();
     /** 频道显示名（原始 MiniMessage 字符串）到已解析组件的缓存，避免每条消息重复解析。 */
     private final Map<String, Component> channelCache = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 已报告过的渲染/解析失败（按规则 id、频道显示名、模板原文去重）。 */
+    private final Set<String> reportedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public FormatManager(MikuChat plugin) {
         this.plugin = plugin;
@@ -43,7 +53,12 @@ public final class FormatManager implements FormatService {
             for (String key : section.getKeys(false)) {
                 ConfigurationSection ruleSection = section.getConfigurationSection(key);
                 if (ruleSection != null) {
-                    loaded.add(FormatRule.from(ruleSection, key));
+                    FormatRule rule = FormatRule.from(ruleSection, key);
+                    // 预校验：format 不是合法 MiniMessage 时直接跳过该规则。
+                    // 否则运行期每条聊天消息都会在渲染时抛解析异常，整条消息都发不出去。
+                    if (validateTemplate(rule.id(), rule.format())) {
+                        loaded.add(rule);
+                    }
                 }
             }
         }
@@ -55,12 +70,20 @@ public final class FormatManager implements FormatService {
 
     @Override
     public Component render(Player sender, ChannelView channel, Component body) {
-        FormatRule rule = match(sender, channel);
-        String template = rule == null ? FALLBACK : rule.format();
-        Map<String, Component> extras = new HashMap<>();
-        extras.put("message", body);
-        extras.put("channel", channelComponent(channel.displayName()));
-        return renderer.render(template, sender, extras);
+        String template = FALLBACK;
+        try {
+            FormatRule rule = match(sender, channel);
+            template = rule == null ? FALLBACK : rule.format();
+            Map<String, Component> extras = new HashMap<>();
+            extras.put("message", body);
+            extras.put("channel", channelComponent(channel.displayName()));
+            return renderer.render(template, sender, extras);
+        } catch (RuntimeException e) {
+            // 兜底：模板/变量注入在运行期出错时只影响「样式」，不能让整条消息丢失。
+            // 按模板原文去重告警，失败时退化为只显示消息正文。
+            warnOnce("template:" + template, "聊天格式渲染失败，已回退为只显示消息正文: " + e.getMessage());
+            return body;
+        }
     }
 
     /**
@@ -71,7 +94,54 @@ public final class FormatManager implements FormatService {
      */
     private Component channelComponent(String displayName) {
         String key = displayName == null ? "" : displayName;
-        return channelCache.computeIfAbsent(key, com.junxiex.mikuchat.core.text.TextUtil::parse);
+        Component cached = channelCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        Component parsed;
+        try {
+            parsed = TextUtil.parse(key);
+        } catch (RuntimeException e) {
+            // 显示名写错（例如 3 位十六进制色值）不能让它冒充「每条消息都抛异常」：
+            // 告警一次后退化为纯文本并缓存，避免反复解析、反复抛。
+            warnOnce("channel:" + key, "频道显示名不是合法的 MiniMessage，已按纯文本显示: "
+                    + key + "（" + e.getMessage() + "）");
+            parsed = Component.text(key);
+        }
+        channelCache.put(key, parsed);
+        return parsed;
+    }
+
+    /**
+     * 预解析校验 format 模板；非法时告警一次并返回 false，由调用方跳过该规则。
+     * <p>
+     * 校验时必须提供 message / channel 两个占位符：它们是运行时由 {@link TemplateRenderer}
+     * 注入的标签，直接 {@code TextUtil.parse} 会被当成未知标签而误杀所有合法规则。
+     */
+    private boolean validateTemplate(String ruleId, String template) {
+        try {
+            TextUtil.mini().deserialize(template == null ? "" : template, FORMAT_PLACEHOLDERS);
+            return true;
+        } catch (RuntimeException e) {
+            warnOnce("rule:" + ruleId, "format.yml 规则 " + ruleId
+                    + " 的 format 不是合法的 MiniMessage，已跳过该规则: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 与 {@link TemplateRenderer} 相同的构建方式，保证校验与运行期使用的是同一套占位符标签。 */
+    private static TagResolver createFormatPlaceholders() {
+        TagResolver.Builder builder = TagResolver.builder();
+        builder.resolver(Placeholder.component("message", Component.empty()));
+        builder.resolver(Placeholder.component("channel", Component.empty()));
+        return builder.build();
+    }
+
+    /** 失败告警去重：同一原因只提示一次，总量有上限，避免配置写坏时刷爆控制台。 */
+    private void warnOnce(String key, String message) {
+        if (reportedFailures.size() < MAX_REPORTED_FAILURES && reportedFailures.add(key)) {
+            plugin.getLogger().warning(message);
+        }
     }
 
     /**

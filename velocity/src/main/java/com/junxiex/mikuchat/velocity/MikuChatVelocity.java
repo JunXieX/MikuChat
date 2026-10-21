@@ -27,7 +27,7 @@ import java.nio.file.Path;
 @Plugin(
         id = "mikuchat",
         name = "MikuChat",
-        version = "1.6.0",
+        version = "1.7.0",
         description = "Velocity 端跨服转发与共享状态保管（配合后端 MikuChat）",
         authors = {"JunXieX"}
 )
@@ -54,13 +54,22 @@ public final class MikuChatVelocity {
         VelocityConfig config = new VelocityConfig(dataDirectory, logger);
         config.load();
 
+        if (config.sharedSecret().isBlank()) {
+            // 没有共享密钥就无法签名，后端也就无法验证消息来自代理；此时不注册通道，
+            // 让后端明确处于「跨服未启用」而不是「看起来连上但可被伪造」。
+            logger.error("未配置 shared-secret，跨服功能已禁用。请在 {} 与后端 network.yml 中配置相同的密钥。",
+                    dataDirectory.resolve("config.yml"));
+            return;
+        }
+
         MinecraftChannelIdentifier channel = MinecraftChannelIdentifier.from(config.channel());
         proxy.getChannelRegistrar().register(channel);
 
         this.store = new SharedStore(dataDirectory, logger);
         this.store.load();
 
-        proxy.getEventManager().register(this, new ProxyBridge(proxy, logger, channel, store, config.debug()));
+        proxy.getEventManager().register(this,
+                new ProxyBridge(proxy, logger, channel, store, config.debug(), config.sharedSecret()));
         logger.info("MikuChat (Velocity) 已启用，跨服通道 {} 就绪。", channel.getId());
     }
 

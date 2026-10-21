@@ -36,6 +36,13 @@ public final class SchedulerUtil {
     }
 
     public void atEntity(Entity entity, Runnable task) {
+        // 当前线程已拥有该实体所属区域时直接内联执行：Paper（非 Folia）主线程、Folia 同区域线程
+        // 都满足此条件，可省去一次任务入队与调度开销（聊天投递对每个接收者都会走这里）。
+        // 异步线程或其它区域仍需交给实体调度器。
+        if (Bukkit.isOwnedByCurrentRegion(entity)) {
+            task.run();
+            return;
+        }
         entity.getScheduler().run(plugin, t -> task.run(), null);
     }
 

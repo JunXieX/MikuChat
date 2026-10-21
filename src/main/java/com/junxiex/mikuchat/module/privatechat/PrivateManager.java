@@ -33,6 +33,8 @@ public final class PrivateManager {
     private static final String TYPE_ACK = "PRIVATE_ACK";
     /** 跨服私聊组件 JSON 的最大长度，超出即视为可疑并丢弃。 */
     private static final int MAX_REMOTE_LINE_LENGTH = 16384;
+    /** 格式模板解析失败告警的去重条目上限：配置写错时只提示少量，避免每条消息都刷日志。 */
+    private static final int MAX_FORMAT_WARNINGS = 16;
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -41,6 +43,7 @@ public final class PrivateManager {
 
     private final Map<UUID, String> replyTargets = new ConcurrentHashMap<>();
     private final Map<String, PendingDelivery> pending = new ConcurrentHashMap<>();
+    private final Map<String, Boolean> warnedFormatErrors = new ConcurrentHashMap<>();
 
     private final BiConsumer<String, String> remoteHandler = (source, json) -> onRemotePrivate(json);
     private final BiConsumer<String, String> ackHandler = (source, json) -> onAck(json);
@@ -134,6 +137,17 @@ public final class PrivateManager {
         MessageComposer.Composed composed = composer.compose(sender, null, content);
         Component body = composed.body();
 
+        // 上一步过滤的是原文，而 MiniMessage 标签不进入可见文本：
+        // 把屏蔽词拆进标签（如「傻<red>逼」）就能让原文匹配落空、游戏内照常显示完整违禁词。
+        // 因此在正文组装完成后，再按玩家实际看到的纯文本校验一次。
+        // 只有输入里带标签/色码时才可能「标签拆词」；普通私聊的可见文本与原文一致，第一次过滤已覆盖。
+        boolean mayHideMarkup = content.indexOf('<') >= 0 || content.indexOf('§') >= 0;
+        if (mayHideMarkup && filter != null
+                && filter.blockedByVisibleText(sender, null, TextUtil.plain(body))) {
+            sender.sendMessage(plugin.lang().get("filter.blocked"));
+            return;
+        }
+
         Component senderLine = renderLine(config.config().getString("formats.sender",
                 "<gray>你 <dark_gray>→ <white>{target}</white><gray>：<message>"),
                 sender.getName(), targetName, body);
@@ -186,10 +200,20 @@ public final class PrivateManager {
             }
             String id = UUID.randomUUID().toString();
             long timeout = config.config().getLong("delivery-timeout-millis", 1500L);
+            // 接收方不在本服：本服的监听管理员只能由发送端转发这一份副本，
+            // 接收端会各自转发它那一份，两侧互补。接收方不在本服，故 receiverId 传 null（不会误排除任何人）。
+            dispatchSpy(spyLine, sender.getUniqueId(), null);
+            String receiverJson = TextUtil.toJson(receiverLine);
+            String spyJson = TextUtil.toJson(spyLine);
+            // 单条插件消息的硬上限是 32767 字节：两行组件（接收行 + 监听行）合计过大时
+            // 放弃监听行副本，优先保证私聊本体能够送达。
+            if (receiverJson.length() + spyJson.length() > 24000) {
+                spyJson = null;
+            }
             pending.put(id, new PendingDelivery(sender, targetName, senderLine, finalContent));
             network.publish(TYPE_PRIVATE, new PrivatePacket(id, sender.getUniqueId(), sender.getName(),
-                    targetName, owners.get(0), TextUtil.toJson(receiverLine), finalContent,
-                    composed.mentions(), System.currentTimeMillis()));
+                    targetName, owners.get(0), receiverJson, spyJson,
+                    finalContent, composed.mentions(), System.currentTimeMillis()));
             plugin.scheduler().asyncLater(() -> {
                 PendingDelivery delivery = pending.remove(id);
                 if (delivery != null && delivery.sender().isOnline()) {
@@ -254,7 +278,22 @@ public final class PrivateManager {
         // 接收方也要能 /reply 回来：跨服场景下发送方的回复指针由 ACK 写入，
         // 接收方这一侧必须在投递时补上，否则 B 回不了 A，只能提示「没有回复对象」。
         replyTargets.put(target.getUniqueId(), packet.safeSenderName());
-        dispatchSpy(safeLine, packet.senderId(), target.getUniqueId());
+        // spyLine 是发送端单独渲染的监听行。旧版本节点没有该字段（Gson 反序列化为 null），
+        // 缺失或非法时只能退回用接收行冒充，保证监听内容不会整条丢失。
+        // 校验顺序：先长度上限（避免超大 JSON 先被反序列化进内存），再 fromJson（catch），最后剥离交互事件。
+        Component spyLine = safeLine;
+        if (packet.spyLine() != null && !packet.spyLine().isEmpty()
+                && packet.spyLine().length() <= MAX_REMOTE_LINE_LENGTH) {
+            try {
+                Component parsed = TextUtil.fromJson(packet.spyLine());
+                if (parsed != null) {
+                    spyLine = TextUtil.stripInteractive(parsed);
+                }
+            } catch (Throwable t) {
+                // 非法 spyLine 静默回退到接收行，不能影响私聊本体投递
+            }
+        }
+        dispatchSpy(spyLine, packet.senderId(), target.getUniqueId());
         // 跨服私聊里的 @ 提醒由接收端触发：发送端的本地提醒覆盖不到另一台服务器的玩家
         notifyMentions(packet.senderId(), packet.safeMentions());
         log(packet.safeSenderName(), target.getName(), packet.safeRawText(), true);
@@ -299,7 +338,7 @@ public final class PrivateManager {
 
     /** 转发给开启监听的在线管理员；发送者与接收者本人都不应收到自己的私聊副本。 */
     private void dispatchSpy(Component line, UUID senderId, UUID receiverId) {
-        String permission = config.config().getString("permissions.spy", "mikuchat.private.spy");
+        String permission = spyPermission();
         for (Player online : Bukkit.getOnlinePlayers()) {
             if (online.getUniqueId().equals(senderId) || online.getUniqueId().equals(receiverId)) {
                 continue;
@@ -331,11 +370,29 @@ public final class PrivateManager {
     }
 
     private Component renderLine(String template, String senderName, String targetName, Component body) {
-        String processed = template
-                .replace("{sender}", senderName)
-                .replace("{target}", targetName)
-                .replace("{message}", "<mcp_body>");
-        return TextUtil.mini().deserialize(processed, Placeholder.component("mcp_body", body));
+        try {
+            String processed = template
+                    .replace("{sender}", senderName)
+                    .replace("{target}", targetName)
+                    .replace("{message}", "<mcp_body>");
+            return TextUtil.mini().deserialize(processed, Placeholder.component("mcp_body", body));
+        } catch (RuntimeException e) {
+            // 配置模板写错（非法 MiniMessage 标签、未闭合标签等）不能让 /msg 整体不可用：
+            // 回退为只显示正文，并只告警一次，避免每条私聊都刷日志。
+            warnFormatOnce(template, e);
+            return body == null ? Component.empty() : body;
+        }
+    }
+
+    /** 格式模板解析失败只告警一次，并用有限容量的 Map 控制去重条目，防止异常配置放大内存。 */
+    private void warnFormatOnce(String template, RuntimeException e) {
+        if (warnedFormatErrors.size() >= MAX_FORMAT_WARNINGS) {
+            return;
+        }
+        String key = String.valueOf(template);
+        if (warnedFormatErrors.putIfAbsent(key, Boolean.TRUE) == null) {
+            plugin.getLogger().warning("私聊消息格式模板解析失败，已回退为只显示正文: " + e.getMessage());
+        }
     }
 
     private Player findLocal(String name) {
@@ -361,6 +418,15 @@ public final class PrivateManager {
         return userData.getBoolean(player.getUniqueId(), "private-spy", false);
     }
 
+    /**
+     * 私聊监听权限节点。每次读取配置，reload 后立即生效；配置缺失或为空时回退默认节点，
+     * 避免 hasPermission(null) 抛异常。
+     */
+    public String spyPermission() {
+        String permission = config.config().getString("permissions.spy", "mikuchat.private.spy");
+        return permission == null || permission.isBlank() ? "mikuchat.private.spy" : permission;
+    }
+
     public void forget(UUID uuid) {
         // 回复目标仅保留会话期，玩家数据由 UserDataStore 统一在退出时释放
         replyTargets.remove(uuid);
@@ -371,9 +437,11 @@ public final class PrivateManager {
      * <p>
      * {@code mentions} 用于接收端补发 @ 提醒：发送端本地的提醒只覆盖本服玩家，
      * 目标玩家在另一台服务器，必须由接收端触发，否则跨服私聊里的 @ 永远不会有提示。
+     * <p>
+     * {@code spyLine} 是发送端渲染好的监听行；旧版本节点不发该字段，接收端需按 null 处理并回退。
      */
     public record PrivatePacket(String id, UUID senderId, String senderName, String targetName,
-                                String targetServer, String receiverLine, String rawText,
+                                String targetServer, String receiverLine, String spyLine, String rawText,
                                 List<String> mentions, long timestamp) {
 
         /** 兼容旧版本节点发来的、不带 mentions 字段的包（Gson 会把缺失字段置为 null）。 */

@@ -99,21 +99,38 @@ public final class DisplayManager implements ChatTokenHandler {
                     plugin.lang().get("generic.no-permission")));
             return null;
         }
-        long cooldown = cooldownsMillis.getOrDefault(type, 0L);
-        long remaining = cooldowns.check(player.getUniqueId(), "display:" + type.name(), cooldown);
-        if (remaining > 0) {
-            String seconds = String.format(Locale.ROOT, "%.1f", remaining / 1000.0);
-            plugin.scheduler().atEntity(player, () -> player.sendMessage(
-                    plugin.lang().get("display.cooldown", "seconds", seconds)));
-            return null;
-        }
-        return switch (type) {
+        // 先确认能成功展示，再消费冷却：否则空手 [item]、空背包 [inv] 也会吃掉冷却，
+        // 玩家拿到物品后立刻再发反而收到「冷却中」，而失败的那次展示本身没有任何产出。
+        Component rendered = switch (type) {
             case ITEM -> renderItem(player);
             case INVENTORY -> renderContainer(player, player.getInventory(), 36, "display.inventory-title",
                     "display.label-inventory", "display.empty-inventory");
             case ENDERCHEST -> renderContainer(player, player.getEnderChest(), 27, "display.enderchest-title",
                     "display.label-enderchest", "display.empty-enderchest");
         };
+        if (rendered == null) {
+            return null;
+        }
+        long cooldown = cooldownsMillis.getOrDefault(type, 0L);
+        long remaining = cooldowns.check(player.getUniqueId(), "display:" + type.name(), cooldown);
+        if (remaining > 0) {
+            notifyCooldown(player, type, remaining);
+            return null;
+        }
+        return rendered;
+    }
+
+    /**
+     * 冷却提示。同一条消息里 [item][item][item] 这类重复标记会逐个进入 render，
+     * 若每个都发一条提示，一条消息就会被放大成十几条系统消息；这里用独立 key 做 1 秒限频。
+     */
+    private void notifyCooldown(Player player, Type type, long remaining) {
+        if (cooldowns.check(player.getUniqueId(), "display:notice:" + type.name(), 1000L) != 0) {
+            return;
+        }
+        String seconds = String.format(Locale.ROOT, "%.1f", remaining / 1000.0);
+        plugin.scheduler().atEntity(player, () -> player.sendMessage(
+                plugin.lang().get("display.cooldown", "seconds", seconds)));
     }
 
     private Component renderItem(Player player) {
@@ -123,7 +140,19 @@ public final class DisplayManager implements ChatTokenHandler {
             return null;
         }
         Component label = plugin.lang().get("display.label-item");
-        return label.hoverEvent(stack.asHoverEvent(UnaryOperator.identity()));
+        try {
+            // Paper 的 ItemStack#asHoverEvent 要求数量在 1..99 之间，否则抛 IllegalArgumentException。
+            // 其它插件生成超堆叠物品时先夹到 99，避免整条聊天消息因一个展示标记而丢失。
+            ItemStack shown = stack;
+            if (stack.getAmount() > 99) {
+                shown = stack.clone();
+                shown.setAmount(99);
+            }
+            return label.hoverEvent(shown.asHoverEvent(UnaryOperator.identity()));
+        } catch (RuntimeException e) {
+            plugin.debug("展示 [item] 失败: " + e.getMessage());
+            return null;
+        }
     }
 
     private Component renderContainer(Player player, Inventory inventory, int size, String titleKey,

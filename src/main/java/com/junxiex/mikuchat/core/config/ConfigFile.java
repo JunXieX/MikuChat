@@ -1,9 +1,11 @@
 package com.junxiex.mikuchat.core.config;
 
 import com.junxiex.mikuchat.MikuChat;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -30,10 +32,13 @@ public final class ConfigFile {
         ensureExists();
         YamlConfiguration loaded;
         try {
-            loaded = YamlConfiguration.loadConfiguration(file);
-        } catch (Throwable t) {
+            // 不能再用 YamlConfiguration.loadConfiguration(File)：它内部吞掉解析异常并返回空配置，
+            // 这里改为显式 load(file)，让语法错误走失败分支
+            loaded = new YamlConfiguration();
+            loaded.load(file);
+        } catch (IOException | InvalidConfigurationException e) {
             // 配置语法错误时不要抛出：保留上一次的有效配置，避免整个模块被禁用
-            plugin.getLogger().severe("配置文件 " + resourcePath + " 解析失败，已沿用上一次的有效配置: " + t.getMessage());
+            plugin.getLogger().severe("配置文件 " + resourcePath + " 解析失败，已沿用上一次的有效配置: " + e.getMessage());
             return;
         }
         try (InputStream in = plugin.getResource(resourcePath)) {

@@ -5,5 +5,10 @@
 # 两端不一致会导致跨服聊天、跨服私聊、禁言同步全部失效。
 channel: "mikuchat:proxy"
 
+# 跨服消息签名密钥：必须与后端 plugins/MikuChat/network.yml 的 shared-secret 完全一致。
+# 留空时跨服功能不会启用（后端也会因密钥为空而禁用），避免客户端伪造插件消息。
+# 生成方式示例（任意 32 位以上随机串）：openssl rand -hex 32
+shared-secret: ""
+
 # 调试日志：开启后输出跨服转发的诊断信息（例如目标服务器当前无可用连接）。
 debug: false

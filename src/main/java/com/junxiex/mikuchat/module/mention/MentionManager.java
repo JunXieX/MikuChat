@@ -136,6 +136,10 @@ public final class MentionManager implements ChatTokenHandler, MentionNotifier {
 
     @Override
     public void notifyMentioned(UUID senderId, List<String> mentioned, String channelDisplay) {
+        // 绝大多数消息没有 @：先判空，避免每条普通消息都往全局线程排一个什么都不做的任务
+        if (mentioned == null || mentioned.isEmpty()) {
+            return;
+        }
         // 可能由插件消息回调或实体线程调用，统一回到全局线程遍历在线玩家
         plugin.scheduler().global(() -> handleNotifyMentioned(senderId, mentioned, channelDisplay));
     }
