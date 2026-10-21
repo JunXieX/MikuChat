@@ -91,6 +91,12 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     /** 本服无玩家在线时暂存的待发消息，玩家接入后按序补发。 */
     private final Deque<byte[]> outbound = new ArrayDeque<>();
     /**
+     * 发送失败的状态类消息：按 uuid 合并只保留最新一条，玩家接入时补发。
+     * 状态类消息不能像聊天那样原样重放（旧 KV_SET 会覆盖后来的解除），
+     * 因此这里以「同一 uuid 只保留最后一次变更」的方式重试。
+     */
+    private final Map<String, byte[]> pendingState = new LinkedHashMap<>();
+    /**
      * 可信来源服务器白名单（{@code network.yml: trusted-servers}）。为空表示不校验（兼容旧配置）；
      * 一旦配置，只接受 {@code src} 命中的消息，防止后端脱离代理运行时被伪造的插件消息注入。
      */
@@ -343,6 +349,22 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             } else if (!queued.isEmpty()) {
                 plugin.debug("已补发 " + queued.size() + " 条暂存的跨服消息。");
             }
+            // 补发合并后的状态类消息（每个 uuid 只保留最后一次变更）
+            Map<String, byte[]> states;
+            synchronized (pendingState) {
+                states = pendingState.isEmpty() ? Map.of() : new LinkedHashMap<>(pendingState);
+            }
+            for (Map.Entry<String, byte[]> entry : states.entrySet()) {
+                try {
+                    player.sendPluginMessage(plugin, channel, entry.getValue());
+                    synchronized (pendingState) {
+                        pendingState.remove(entry.getKey(), entry.getValue());
+                    }
+                } catch (Throwable t) {
+                    failure = t;
+                    break;
+                }
+            }
             // 只在「可能漏收实时消息」时补一次全量同步：启动后首名玩家接入、或本服曾无人在线、
             // 或补发失败。避免每次 join 都做一次全量 STATE_SYNC 与本地文件整写。
             if (resyncNeeded || failure != null) {
@@ -581,7 +603,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         Player carrier = carrier();
         if (carrier == null) {
             if (queueIfOffline) {
-                enqueue(data);
+                storeOrEnqueue(json, data);
             }
             return;
         }
@@ -589,28 +611,73 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             try {
                 if (!carrier.isOnline()) {
                     // 承载玩家在投递前离线：按队列语义处理，避免消息静默丢失
-                    if (queueIfOffline) {
-                        enqueue(data);
-                    }
                     carrierId = null;
+                    if (queueIfOffline) {
+                        storeOrEnqueue(json, data);
+                    }
                     return;
                 }
                 carrier.sendPluginMessage(plugin, channel, data);
+                // 该 uuid 的最新状态已经送达，清掉可能残留的旧待发状态
+                if (!pendingState.isEmpty()) {
+                    String stateKey = stateKeyOf(json);
+                    if (stateKey != null) {
+                        synchronized (pendingState) {
+                            pendingState.remove(stateKey);
+                        }
+                    }
+                }
             } catch (Throwable t) {
                 plugin.debug("发送跨服消息失败: " + t.getMessage());
                 carrierId = null;
                 if (queueIfOffline) {
-                    if (shouldReplayOnFailure(json)) {
-                        // 聊天/私聊可以安全重放，等下一名玩家接入时重试
-                        enqueue(data);
-                    } else {
-                        // 状态类消息不重放旧值：否则「解除」之后补发的旧 KV_SET/MUTE_UPDATE
-                        // 会把已解除的禁言重新写回去。改为标记需要一次权威全量同步。
-                        resyncNeeded = true;
-                    }
+                    storeOrEnqueue(json, data);
                 }
             }
         });
+    }
+
+    /**
+     * 发送失败/无承载连接时的处理：聊天与私聊进普通队列按序重放；
+     * 状态类消息按 uuid 合并到 pendingState，只重试最后一次变更，避免旧值覆盖新状态。
+     */
+    private void storeOrEnqueue(String json, byte[] data) {
+        String stateKey = stateKeyOf(json);
+        if (stateKey == null) {
+            enqueue(data);
+            return;
+        }
+        synchronized (pendingState) {
+            pendingState.remove(stateKey);
+            pendingState.put(stateKey, data);
+            while (pendingState.size() > queueCapacity) {
+                var iterator = pendingState.keySet().iterator();
+                if (!iterator.hasNext()) {
+                    break;
+                }
+                iterator.next();
+                iterator.remove();
+            }
+        }
+        resyncNeeded = true;
+    }
+
+    /** 状态类消息的合并键（KV_SET/KV_DEL/MUTE_UPDATE 共用 uuid，删除可覆盖写入）。 */
+    private String stateKeyOf(String json) {
+        try {
+            JsonObject object = JsonParser.parseString(json).getAsJsonObject();
+            String type = object.has("type") ? object.get("type").getAsString() : "";
+            if (!(TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type) || "MUTE_UPDATE".equals(type))) {
+                return null;
+            }
+            JsonObject data = object.has("data") && object.get("data").isJsonObject()
+                    ? object.getAsJsonObject("data") : new JsonObject();
+            String field = data.has("field") ? data.get("field").getAsString()
+                    : data.has("uuid") ? data.get("uuid").getAsString() : "";
+            return "state:" + field;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private void enqueue(byte[] data) {
@@ -621,18 +688,6 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             outbound.addLast(data);
         }
         plugin.debug("本服当前无玩家在线，跨服消息已暂存，待玩家接入后补发。");
-    }
-
-    /** 发送失败时是否适合重放：状态类消息交给下一次全量同步修复，避免旧值覆盖新状态。 */
-    private boolean shouldReplayOnFailure(String json) {
-        try {
-            JsonObject object = JsonParser.parseString(json).getAsJsonObject();
-            String type = object.has("type") ? object.get("type").getAsString() : "";
-            return !(TYPE_STATE_REQ.equals(type) || TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type)
-                    || "MUTE_UPDATE".equals(type));
-        } catch (Throwable t) {
-            return true;
-        }
     }
 
     private Player carrier() {

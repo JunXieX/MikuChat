@@ -132,13 +132,18 @@ public final class AsyncFileWriter {
         }
     }
 
-    /** flush 所有已打开的句柄（最多 {@link #MAX_OPEN_FILES} 个），单个失败不影响其它文件。 */
+    /**
+     * flush 所有已打开的句柄（最多 {@link #MAX_OPEN_FILES} 个），单个失败不影响其它文件。
+     * 失败时关闭并移除该句柄，让下一次写入重建，同时输出一次告警（否则磁盘异常会静默丢日志）。
+     */
     private void flushAll() {
-        for (BufferedWriter writer : writers.values()) {
+        for (Map.Entry<Path, BufferedWriter> entry : writers.entrySet()) {
             try {
-                writer.flush();
-            } catch (Throwable ignored) {
-                // 句柄已失效时由下一次 write 的错误路径重建
+                entry.getValue().flush();
+            } catch (IOException e) {
+                closeQuietly(writers.remove(entry.getKey()));
+                plugin.getLogger().warning("刷新日志文件失败，已关闭句柄等待重建: "
+                        + entry.getKey() + " (" + e.getMessage() + ")");
             }
         }
     }

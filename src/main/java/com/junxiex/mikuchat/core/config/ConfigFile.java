@@ -38,7 +38,8 @@ public final class ConfigFile {
             loaded.load(file);
         } catch (IOException | InvalidConfigurationException e) {
             // 配置语法错误时不要抛出：保留上一次的有效配置，避免整个模块被禁用
-            plugin.getLogger().severe("配置文件 " + resourcePath + " 解析失败，已沿用上一次的有效配置: " + e.getMessage());
+            plugin.getLogger().severe("配置文件 " + resourcePath + " 解析失败，已保留上一次的有效配置"
+                    + "（首次加载时改用内置默认值）: " + e.getMessage());
             if (this.config.getKeys(false).isEmpty()) {
                 // 首次加载就损坏（字段初始值是空配置）：至少应用 jar 内置默认值，
                 // 避免模块以「全空配置」运行；重载场景下 this.config 已有旧值，不受影响。

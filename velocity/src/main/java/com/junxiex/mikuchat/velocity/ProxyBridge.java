@@ -70,6 +70,9 @@ public final class ProxyBridge {
     private final boolean debug;
     private final String sharedSecret;
     private final Gson gson = new Gson();
+    /** 过大消息丢弃计数：限频告警，避免异常/被攻陷的后端刷爆代理日志。 */
+    private final java.util.concurrent.atomic.AtomicLong oversizedDrops =
+            new java.util.concurrent.atomic.AtomicLong();
 
     public ProxyBridge(ProxyServer proxy, Logger logger, MinecraftChannelIdentifier channel, SharedStore store,
                        boolean debug, String sharedSecret) {
@@ -215,7 +218,7 @@ public final class ProxyBridge {
         byte[] sealed = seal(envelope);
         if (sealed.length > MAX_RELAY_BYTES) {
             // 代理→后端是 serverbound custom payload，硬上限 32767：超限会让接收端解码失败并断开连接
-            logger.warn("跨服消息过大（{} 字节），已丢弃以避免接收端断连。", sealed.length);
+            reportOversized(sealed.length, type);
             return;
         }
         if (!targetServer.isEmpty()) {
@@ -253,6 +256,10 @@ public final class ProxyBridge {
                 pages.add(current);
                 current = new LinkedHashMap<>();
                 currentBytes = 0;
+            }
+            if (size > MAX_MESSAGE_BYTES) {
+                // 单条就超页预算：无法再拆，交由统一出口的长度校验丢弃并告警
+                reportOversized(size, "STATE_ENTRY");
             }
             current.put(entry.getKey(), entry.getValue());
             currentBytes += size;
@@ -313,8 +320,24 @@ public final class ProxyBridge {
         envelope.addProperty("ts", System.currentTimeMillis());
         envelope.addProperty("proto", PROTO_VERSION);
         envelope.add("data", payload);
-        if (!server.sendPluginMessage(channel, seal(envelope)) && debug) {
+        // 统一出口做长度硬校验：旧后端（legacy 单条下发）与单个超大 entry 也在此被拦下，
+        // 避免发出必然超过 32767 字节、导致接收端解码失败断连的数据包。
+        byte[] sealed = seal(envelope);
+        if (sealed.length > MAX_RELAY_BYTES) {
+            reportOversized(sealed.length, type);
+            return;
+        }
+        if (!server.sendPluginMessage(channel, sealed) && debug) {
             logger.info("服务器 {} 无可用连接，{} 未送达。", server.getServerInfo().getName(), type);
+        }
+    }
+
+    /** 过大消息的限频告警（首次 + 每 100 条），避免持续异常时刷爆日志。 */
+    private void reportOversized(int bytes, String type) {
+        long total = oversizedDrops.incrementAndGet();
+        if (total == 1L || total % 100L == 0L) {
+            logger.warn("跨服消息过大（{} 字节，类型 {}），已丢弃以避免接收端断连（累计 {} 条）。",
+                    bytes, type, total);
         }
     }
 
