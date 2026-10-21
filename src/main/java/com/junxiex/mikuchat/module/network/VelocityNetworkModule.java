@@ -356,6 +356,12 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             }
             for (Map.Entry<String, PendingState> entry : states.entrySet()) {
                 PendingState pending = entry.getValue();
+                synchronized (pendingState) {
+                    // 发送前再确认一次：若期间已被更新的变更替换，就不再把旧字节发出去
+                    if (pendingState.get(entry.getKey()) != pending) {
+                        continue;
+                    }
+                }
                 try {
                     player.sendPluginMessage(plugin, channel, pending.data());
                     synchronized (pendingState) {

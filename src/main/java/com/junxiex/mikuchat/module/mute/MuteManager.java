@@ -75,7 +75,7 @@ public final class MuteManager implements MuteService {
      * 旧格式尚未完成迁移：此期间本地写入不写 format-version，
      * 否则「升级后先独立运行、后接代理」时迁移标记会被提前抹掉，历史禁言会在首个空快照时丢失。
      */
-    private boolean migrationPending;
+    private volatile boolean migrationPending;
 
     public MuteManager(MikuChat plugin) {
         this.plugin = plugin;
