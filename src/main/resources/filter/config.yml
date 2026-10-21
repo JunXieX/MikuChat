@@ -36,6 +36,8 @@ profiles:
     # 命中屏蔽词时的替换符（单字符会按原长度重复）
     replacement: "*"
     # true = 命中即整条拦截；false = 替换后照常发送
+    # 注意：用 MiniMessage 标签/§ 色码把词语拆开属于刻意规避，渲染后的可见文本二次校验
+    #       一律按整条拦截处理（不受本项与 ad.block 影响）。
     block-on-match: false
     # 是否提示发送者
     notify-sender: true

@@ -40,7 +40,13 @@ public final class SchedulerUtil {
         // 都满足此条件，可省去一次任务入队与调度开销（聊天投递对每个接收者都会走这里）。
         // 异步线程或其它区域仍需交给实体调度器。
         if (Bukkit.isOwnedByCurrentRegion(entity)) {
-            task.run();
+            // 内联执行没有调度器兜底：任务异常不能冒泡打乱调用方（如某个接收者发送失败导致
+            // 后续接收者/跨服广播/留档全部中断），因此这里自行隔离并记录。
+            try {
+                task.run();
+            } catch (Throwable t) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE, "实体内联任务执行失败", t);
+            }
             return;
         }
         entity.getScheduler().run(plugin, t -> task.run(), null);

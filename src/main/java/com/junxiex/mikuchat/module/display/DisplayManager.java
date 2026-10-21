@@ -99,16 +99,31 @@ public final class DisplayManager implements ChatTokenHandler {
                     plugin.lang().get("generic.no-permission")));
             return null;
         }
-        // 先确认能成功展示，再消费冷却：否则空手 [item]、空背包 [inv] 也会吃掉冷却，
-        // 玩家拿到物品后立刻再发反而收到「冷却中」，而失败的那次展示本身没有任何产出。
-        Component rendered = switch (type) {
-            case ITEM -> renderItem(player);
-            case INVENTORY -> renderContainer(player, player.getInventory(), 36, "display.inventory-title",
-                    "display.label-inventory", "display.empty-inventory");
-            case ENDERCHEST -> renderContainer(player, player.getEnderChest(), 27, "display.enderchest-title",
-                    "display.label-enderchest", "display.empty-enderchest");
-        };
-        if (rendered == null) {
+        // 顺序：先做廉价可行性检查（不构建组件）→ 消费冷却 → 构建 hover。
+        // 这样既不会让「空手/空背包」的失败展示吃掉冷却，也不会让冷却中的刷屏消息
+        // 反复构建整张 36/27 格网格（[inv]xN 会把网格构建放大 N 倍）。
+        boolean hasContent = false;
+        String emptyLangKey = null;
+        Inventory inventory = null;
+        int size = 0;
+        switch (type) {
+            case ITEM -> hasContent = !isAir(player.getInventory().getItemInMainHand());
+            case INVENTORY -> {
+                inventory = player.getInventory();
+                size = 36;
+                emptyLangKey = "display.empty-inventory";
+                hasContent = hasAnyItem(inventory, size);
+            }
+            case ENDERCHEST -> {
+                inventory = player.getEnderChest();
+                size = 27;
+                emptyLangKey = "display.empty-enderchest";
+                hasContent = hasAnyItem(inventory, size);
+            }
+        }
+        if (!hasContent) {
+            String key = emptyLangKey == null ? "display.no-item" : emptyLangKey;
+            notifyLimited(player, "empty:" + type.name(), () -> plugin.lang().get(key));
             return null;
         }
         long cooldown = cooldownsMillis.getOrDefault(type, 0L);
@@ -117,7 +132,38 @@ public final class DisplayManager implements ChatTokenHandler {
             notifyCooldown(player, type, remaining);
             return null;
         }
-        return rendered;
+        Inventory target = inventory;
+        return switch (type) {
+            case ITEM -> renderItem(player);
+            case INVENTORY -> renderContainer(player, target, size, "display.inventory-title",
+                    "display.label-inventory", "display.empty-inventory");
+            case ENDERCHEST -> renderContainer(player, target, size, "display.enderchest-title",
+                    "display.label-enderchest", "display.empty-enderchest");
+        };
+    }
+
+    /** 背包/末影箱是否至少有一件非空气物品（只读槽位、不构建组件）。 */
+    private static boolean hasAnyItem(Inventory inventory, int size) {
+        for (int i = 0; i < size; i++) {
+            if (!isAir(inventory.getItem(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isAir(ItemStack stack) {
+        return stack == null || stack.getType().isAir();
+    }
+
+    /**
+     * 失败/提示类消息的 1 秒限频：一条消息里 [inv]xN 不应放大成 N 条系统提示。
+     */
+    private void notifyLimited(Player player, String key, java.util.function.Supplier<Component> message) {
+        if (cooldowns.check(player.getUniqueId(), "display:notice:" + key, 1000L) != 0) {
+            return;
+        }
+        plugin.scheduler().atEntity(player, () -> player.sendMessage(message.get()));
     }
 
     /**
@@ -135,8 +181,8 @@ public final class DisplayManager implements ChatTokenHandler {
 
     private Component renderItem(Player player) {
         ItemStack stack = player.getInventory().getItemInMainHand();
-        if (stack == null || stack.getType().isAir()) {
-            plugin.scheduler().atEntity(player, () -> player.sendMessage(plugin.lang().get("display.no-item")));
+        if (isAir(stack)) {
+            notifyLimited(player, "empty:ITEM", () -> plugin.lang().get("display.no-item"));
             return null;
         }
         Component label = plugin.lang().get("display.label-item");
@@ -159,7 +205,7 @@ public final class DisplayManager implements ChatTokenHandler {
                                       String labelKey, String emptyKey) {
         Component grid = buildGrid(player, inventory, size, titleKey);
         if (grid == null) {
-            plugin.scheduler().atEntity(player, () -> player.sendMessage(plugin.lang().get(emptyKey)));
+            notifyLimited(player, "empty:" + labelKey, () -> plugin.lang().get(emptyKey));
             return null;
         }
         Component label = plugin.lang().get(labelKey);

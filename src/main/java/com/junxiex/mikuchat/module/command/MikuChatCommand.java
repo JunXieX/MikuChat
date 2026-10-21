@@ -323,17 +323,23 @@ public final class MikuChatCommand implements BasicCommand {
             // 重载涉及磁盘 I/O，放到全局线程执行，避免阻塞触发的区域线程
             plugin.scheduler().global(() -> {
                 boolean ok = plugin.moduleManager().reload(module);
+                boolean depsOk = true;
                 if (ok && "network".equalsIgnoreCase(module)) {
                     // 网络模块重建后，chat/mute/private 在各自 enable 时建立的订阅不会自动补上：
                     // 它们只在自身 reload 时才会重新 subscribe。这里一并重载依赖方，
                     // 避免 /mchat reload network 之后「跨服通道已就绪、却收不到任何跨服消息」。
-                    plugin.moduleManager().reload("chat");
-                    plugin.moduleManager().reload("mute");
-                    plugin.moduleManager().reload("private");
+                    depsOk = plugin.moduleManager().reload("chat");
+                    depsOk = plugin.moduleManager().reload("mute") && depsOk;
+                    depsOk = plugin.moduleManager().reload("private") && depsOk;
                 }
-                notifySender(sender, ok
-                        ? plugin.lang().get("generic.reloaded-module", "module", module)
-                        : plugin.lang().get("generic.module-not-found", "module", module));
+                if (!ok) {
+                    notifySender(sender, plugin.lang().get("generic.module-not-found", "module", module));
+                } else if (!depsOk) {
+                    // 依赖模块失败不能被「重载完成」掩盖，否则运维会误以为跨服订阅已恢复
+                    notifySender(sender, plugin.lang().get("generic.reload-partial", "module", module));
+                } else {
+                    notifySender(sender, plugin.lang().get("generic.reloaded-module", "module", module));
+                }
             });
             return;
         }

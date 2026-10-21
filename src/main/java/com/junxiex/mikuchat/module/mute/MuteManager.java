@@ -33,7 +33,10 @@ public final class MuteManager implements MuteService {
     private static final String MUTE_HASH_KEY = "mikuchat:mutes";
     private static final String MUTE_UPDATE_TYPE = "MUTE_UPDATE";
     private static final String PENDING_PREFIX = "P|";
-    private static final int MAX_STATE_PAGES = 64;
+    /** 本地文件格式版本：2 起支持 P| 待同步前缀；旧文件升级时要把历史记录回填一次。 */
+    private static final int FORMAT_VERSION = 2;
+    /** 与代理端分页上限对应：单页约 50-150 条，512 页足以覆盖数万条禁言。 */
+    private static final int MAX_STATE_PAGES = 512;
     private static final com.google.gson.Gson JSON = new com.google.gson.Gson();
 
     private final MikuChat plugin;
@@ -46,6 +49,8 @@ public final class MuteManager implements MuteService {
     private final Object cacheLock = new Object();
     /** 代理不可用期间新增、尚未确认写入共享存储的禁言（仅这些会被回填）。 */
     private final Set<UUID> pendingUpload = ConcurrentHashMap.newKeySet();
+    /** 代理未确认时执行的解除操作：等全量同步时强制从快照中剔除并重发删除，避免禁言复活。 */
+    private final Set<UUID> pendingDeletes = ConcurrentHashMap.newKeySet();
     private final BiConsumer<String, String> updateHandler = (source, json) -> handleUpdate(json);
     private final BiConsumer<String, String> syncHandler = (source, json) -> handleStateSync(json);
     /**
@@ -62,6 +67,8 @@ public final class MuteManager implements MuteService {
     /** STATE_SYNC 分页聚合状态（受 cacheLock 保护）。 */
     private int statePage;
     private final Map<UUID, MuteInfo> stateAcc = new HashMap<>();
+    /** 全量同步进行期间发生的本地禁言变更：提交快照时以这些本地变更覆盖旧快照。 */
+    private final Set<UUID> touchedDuringSync = new HashSet<>();
 
     public MuteManager(MikuChat plugin) {
         this.plugin = plugin;
@@ -75,11 +82,20 @@ public final class MuteManager implements MuteService {
         synchronized (cacheLock) {
             Map<UUID, MuteInfo> loaded = new HashMap<>();
             pendingUpload.clear();
-            loadLocalFile(loaded);
+            pendingDeletes.clear();
+            touchedDuringSync.clear();
+            boolean legacyFormat = loadLocalFile(loaded);
             loaded.entrySet().removeIf(entry -> entry.getValue().expired());
             this.cache = new ConcurrentHashMap<>(loaded);
             this.statePage = 0;
             this.stateAcc.clear();
+            if (legacyFormat) {
+                // 1.6.0 及更早版本的 mute.yml 没有格式版本号，也无法区分「本地独有」与「已在代理」。
+                // 旧版行为是启动时把本地记录全部回填一次，这里保留同样语义，避免独立服转代理后
+                // 历史禁言被首次全量同步静默清空；随后写回版本号与 P| 标记。
+                pendingUpload.addAll(loaded.keySet());
+                writeWholeLocalFile(cache, pendingUpload);
+            }
             NetworkService network = network();
             if (network != null && network.available()) {
                 // 只回填「离线期间新增」的记录，随后以代理端快照为准覆盖本地：
@@ -109,7 +125,9 @@ public final class MuteManager implements MuteService {
             int page = object.has("page") ? object.get("page").getAsInt() : 1;
             int pages = object.has("pages") ? object.get("pages").getAsInt() : 1;
             if (pages < 1 || pages > MAX_STATE_PAGES || page < 1 || page > pages) {
-                plugin.debug("忽略非法的共享状态页码: " + page + "/" + pages);
+                // 页数超限说明禁言表远超预期（或对端异常）：不能静默失效，否则跨服同步永久停摆
+                plugin.getLogger().warning("共享状态页数异常（" + page + "/" + pages
+                        + "，上限 " + MAX_STATE_PAGES + "），已忽略本次快照；请检查禁言记录数量。");
                 return;
             }
             synchronized (cacheLock) {
@@ -140,9 +158,10 @@ public final class MuteManager implements MuteService {
                 }
                 Map<UUID, MuteInfo> loaded = new HashMap<>(stateAcc);
                 stateAcc.clear();
-                statePage = 0;
                 loaded.entrySet().removeIf(entry -> entry.getValue().expired());
+                // statePage 保持非零直到 commitSnapshot 完成，这样同步窗口内的 mute/unmute 会被记录
                 commitSnapshot(loaded);
+                statePage = 0;
             }
         } catch (Throwable t) {
             plugin.debug("解析共享状态失败: " + t.getMessage());
@@ -164,11 +183,37 @@ public final class MuteManager implements MuteService {
                 stillPending.add(uuid);
             }
         }
-        if (stillPending.isEmpty() && loaded.equals(previous)) {
+        // 代理未确认时执行过的解除：强制从快照里剔除；若快照仍包含，说明删除尚未传播，保留重试。
+        Set<UUID> stillDelete = new HashSet<>();
+        for (UUID uuid : pendingDeletes) {
+            if (loaded.remove(uuid) != null || previous.containsKey(uuid)) {
+                stillDelete.add(uuid);
+            }
+        }
+        pendingDeletes.retainAll(stillDelete);
+        // 同步进行期间发生的本地变更（Folia 上插件消息线程与命令线程不同）：以本地最新状态为准
+        Set<UUID> touched = new HashSet<>(touchedDuringSync);
+        touchedDuringSync.clear();
+        Set<UUID> removedLocally = new HashSet<>();
+        for (UUID uuid : touched) {
+            MuteInfo local = previous.get(uuid);
+            if (local != null && !local.expired()) {
+                loaded.put(uuid, local);
+                // 这条变更可能不在这份快照里，必须继续保持待同步并重新上传
+                stillPending.add(uuid);
+            } else {
+                loaded.remove(uuid);
+                removedLocally.add(uuid);
+            }
+        }
+        if (stillPending.isEmpty() && pendingUpload.isEmpty() && pendingDeletes.isEmpty()
+                && loaded.equals(previous)) {
             // 与当前一致：不重建 map、不重写文件（避免每次全量同步都产生一次磁盘原子替换）
             return;
         }
         this.cache = new ConcurrentHashMap<>(loaded);
+        // 注意：只要 pendingUpload 里有已确认的条目，也必须走这里清掉 P| 前缀与内存标记，
+        // 因此提前返回条件里带上 pendingUpload.isEmpty()（否则 P| 会残留到下次重启并重新上传）。
         pendingUpload.retainAll(stillPending);
         writeWholeLocalFile(cache, pendingUpload);
         NetworkService network = network();
@@ -178,6 +223,12 @@ public final class MuteManager implements MuteService {
                 if (info != null) {
                     network.hashSet(MUTE_HASH_KEY, uuid.toString(), serialize(info));
                 }
+            }
+            for (UUID uuid : removedLocally) {
+                network.hashDelete(MUTE_HASH_KEY, uuid.toString());
+            }
+            for (UUID uuid : stillDelete) {
+                network.hashDelete(MUTE_HASH_KEY, uuid.toString());
             }
         }
     }
@@ -192,15 +243,21 @@ public final class MuteManager implements MuteService {
         }
     }
 
-    private void loadLocalFile(Map<UUID, MuteInfo> loaded) {
+    /**
+     * 读取本地回落文件。
+     *
+     * @return true 表示这是没有格式版本号的旧文件（升级场景），调用方需要把记录回填一次并写回版本号
+     */
+    private boolean loadLocalFile(Map<UUID, MuteInfo> loaded) {
         File file = new File(plugin.getDataFolder(), "mute.yml");
         if (!file.exists()) {
-            return;
+            return false;
         }
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
         var section = yaml.getConfigurationSection("mutes");
+        boolean legacy = yaml.getInt("format-version", 0) < FORMAT_VERSION;
         if (section == null) {
-            return;
+            return legacy;
         }
         for (String key : section.getKeys(false)) {
             String raw = section.getString(key);
@@ -211,13 +268,14 @@ public final class MuteManager implements MuteService {
             try {
                 UUID uuid = UUID.fromString(key);
                 loaded.put(uuid, info);
-                if (isPending(raw)) {
+                if (legacy || isPending(raw)) {
                     pendingUpload.add(uuid);
                 }
             } catch (IllegalArgumentException ignored) {
                 // 非法 UUID 忽略
             }
         }
+        return legacy;
     }
 
     private static boolean isPending(String value) {
@@ -257,15 +315,23 @@ public final class MuteManager implements MuteService {
         long expireAt = durationMillis <= 0 ? 0 : System.currentTimeMillis() + durationMillis;
         MuteInfo info = new MuteInfo(reason == null ? "" : reason, expireAt);
         NetworkService network = network();
-        boolean shared = network != null && network.available();
+        boolean channel = network != null && network.available();
+        // 只有「确实收到过代理端签名消息」才算写入已确认；通道注册成功不代表代理插件在线
+        boolean confirmed = network != null && network.connected();
         synchronized (cacheLock) {
             cache.put(uuid, info);
-            if (shared) {
-                pendingUpload.remove(uuid);
+            pendingDeletes.remove(uuid);
+            if (statePage > 0) {
+                touchedDuringSync.add(uuid);
+            }
+            if (channel) {
+                // 先入队：代理恢复后会自动送出；未确认时同时保留 P| 标记，等快照确认后再降级
                 network.hashSet(MUTE_HASH_KEY, uuid.toString(), serialize(info));
+            }
+            if (confirmed) {
+                pendingUpload.remove(uuid);
                 saveLocal(uuid, serialize(info));
             } else {
-                // 代理不可用：先记待同步标记，等代理恢复后只回填这些记录
                 pendingUpload.add(uuid);
                 saveLocal(uuid, PENDING_PREFIX + serialize(info));
             }
@@ -276,10 +342,20 @@ public final class MuteManager implements MuteService {
     public boolean unmute(UUID uuid) {
         NetworkService network = network();
         boolean shared = network != null && network.available();
+        boolean confirmed = network != null && network.connected();
         boolean removed;
         synchronized (cacheLock) {
             removed = cache.remove(uuid) != null;
             pendingUpload.remove(uuid);
+            if (confirmed) {
+                pendingDeletes.remove(uuid);
+            } else {
+                // 代理未确认删除成功：记录待删除，等下次全量同步时再次剔除并重发
+                pendingDeletes.add(uuid);
+            }
+            if (statePage > 0) {
+                touchedDuringSync.add(uuid);
+            }
             if (shared) {
                 network.hashDelete(MUTE_HASH_KEY, uuid.toString());
             }
@@ -326,15 +402,20 @@ public final class MuteManager implements MuteService {
         try {
             UUID uuid = UUID.fromString(uuidString);
             synchronized (cacheLock) {
+                if (statePage > 0) {
+                    touchedDuringSync.add(uuid);
+                }
                 if (Boolean.parseBoolean(payload.get("remove"))) {
                     cache.remove(uuid);
                     pendingUpload.remove(uuid);
+                    pendingDeletes.remove(uuid);
                     saveLocal(uuid, null);
                 } else {
                     MuteInfo info = parse(payload.get("value"));
                     if (info != null) {
                         cache.put(uuid, info);
                         pendingUpload.remove(uuid);
+                        pendingDeletes.remove(uuid);
                         saveLocal(uuid, serialize(info));
                     }
                 }
@@ -358,6 +439,7 @@ public final class MuteManager implements MuteService {
             File file = new File(plugin.getDataFolder(), "mute.yml");
             YamlConfiguration yaml = file.exists()
                     ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
+            yaml.set("format-version", FORMAT_VERSION);
             yaml.set("mutes." + uuid, value);
             try {
                 com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);
@@ -423,6 +505,7 @@ public final class MuteManager implements MuteService {
         submitLocalWrite(() -> {
             File file = new File(plugin.getDataFolder(), "mute.yml");
             YamlConfiguration yaml = new YamlConfiguration();
+            yaml.set("format-version", FORMAT_VERSION);
             for (Map.Entry<UUID, MuteInfo> entry : copy.entrySet()) {
                 String value = serialize(entry.getValue());
                 yaml.set("mutes." + entry.getKey(),

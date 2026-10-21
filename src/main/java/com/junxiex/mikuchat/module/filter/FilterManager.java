@@ -150,7 +150,7 @@ public final class FilterManager implements FilterService {
             Advertisement ad = collectAdvertisement(current, profile, text, normalized);
             if (ad.hit()) {
                 advertisement = true;
-                if (profile.advertisementBlock()) {
+                if (profile.advertisementBlock() || ad.unlocatable()) {
                     return new Result(text, false, profile.notifySender(), true, true);
                 }
                 ranges.addAll(ad.ranges());
@@ -214,6 +214,9 @@ public final class FilterManager implements FilterService {
     }
 
     public boolean scanAdvertisement(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
         State current = state;
         // 与 profileFor 保持一致：profile 的 key 在加载时统一小写，
         // 这里若用原始大小写的 defaultProfile 查找，配置写成大写时会取不到而回落到首个 profile。
@@ -222,7 +225,11 @@ public final class FilterManager implements FilterService {
             profile = current.profiles().getOrDefault(current.defaultProfile(),
                     current.profiles().values().stream().findFirst().orElse(null));
         }
-        return profile != null && profile.advertisementEnabled() && profile.adDetector().isAdvertisement(text);
+        if (profile == null || !profile.advertisementEnabled()) {
+            return false;
+        }
+        // 与运行时 apply 使用同一套三视图 + 空格拆字判定，避免 /mchat filter test 与线上不一致
+        return collectAdvertisement(current, profile, text, current.normalizer().normalize(text)).hit();
     }
 
     public int wordCount() {
@@ -252,16 +259,17 @@ public final class FilterManager implements FilterService {
         List<int[]> adView = detector.findMatches(adNormalized.text());
         List<int[]> rawView = detector.findMatches(text);
         boolean hit = !wordView.isEmpty() || !adView.isEmpty() || !rawView.isEmpty();
+        boolean compactOnlyHit = false;
         if (!hit) {
             // 空格拆字（h t t p : / / ...）只有把空白全部去掉才能被 URL 规则命中。
             // 去空白会把链接与后一个词粘连，用它计算替换区间会多吞字，因此只用于命中判定；
             // 文本本身没有空白时无需再做这次额外检测。
             String adText = adNormalized.text();
             if (containsWhitespace(adText)) {
-                hit = !detector.findMatches(compactWhitespace(adText)).isEmpty();
+                compactOnlyHit = !detector.findMatches(compactWhitespace(adText)).isEmpty();
             }
-            if (!hit) {
-                return new Advertisement(false, List.of());
+            if (!compactOnlyHit) {
+                return new Advertisement(false, false, List.of());
             }
         }
         List<int[]> ranges = new ArrayList<>(wordView);
@@ -278,7 +286,10 @@ public final class FilterManager implements FilterService {
                 ranges.add(mapped);
             }
         }
-        return new Advertisement(true, ranges);
+        // 只有 compact 视图命中时无法给出替换区间：若配置是「仅替换」模式，静默放行等于让
+        // 空格拆字完全绕过广告过滤，因此标记为 unlocatable，调用方按整条拦截处理。
+        boolean unlocatable = compactOnlyHit && ranges.isEmpty();
+        return new Advertisement(true, unlocatable, ranges);
     }
 
     /** 文本中是否含空白字符（用于避免无谓的空格拆字检测）。 */
@@ -495,8 +506,11 @@ public final class FilterManager implements FilterService {
     private record Scan(List<int[]> ranges, List<String> patterns) {
     }
 
-    /** 广告检测结果：是否命中 + 已换算到归一化下标的替换区间。 */
-    private record Advertisement(boolean hit, List<int[]> ranges) {
+    /**
+     * 广告检测结果：是否命中 + 已换算到归一化下标的替换区间。
+     * {@code unlocatable} 表示只能证明命中、无法安全定位区间（空格拆字视图），此类命中按整条拦截处理。
+     */
+    private record Advertisement(boolean hit, boolean unlocatable, List<int[]> ranges) {
     }
 
     /** 一份自洽的运行时配置快照。 */

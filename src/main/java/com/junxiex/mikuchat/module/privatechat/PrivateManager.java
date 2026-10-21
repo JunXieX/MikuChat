@@ -14,6 +14,7 @@ import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -31,8 +32,10 @@ public final class PrivateManager {
 
     private static final String TYPE_PRIVATE = "PRIVATE";
     private static final String TYPE_ACK = "PRIVATE_ACK";
-    /** 跨服私聊组件 JSON 的最大长度，超出即视为可疑并丢弃。 */
-    private static final int MAX_REMOTE_LINE_LENGTH = 16384;
+    /** 跨服私聊单行组件 JSON 的 UTF-8 字节上限，超出即视为可疑并丢弃。 */
+    private static final int MAX_REMOTE_LINE_BYTES = 16384;
+    /** 两行组件合计字节预算：插件消息硬上限 32767 字节，留出信封与 JSON 转义余量。 */
+    private static final int MAX_PRIVATE_PACKET_BYTES = 24000;
     /** 格式模板解析失败告警的去重条目上限：配置写错时只提示少量，避免每条消息都刷日志。 */
     private static final int MAX_FORMAT_WARNINGS = 16;
 
@@ -173,7 +176,8 @@ public final class PrivateManager {
         }
 
         NetworkService network = plugin.services().find(NetworkService.class).orElse(null);
-        if (network == null || !network.available()) {
+        // 与 chat / who 的语义保持一致：通道注册成功不代表代理端在线，否则会白等一次查询超时
+        if (network == null || !network.connected()) {
             sender.sendMessage(plugin.lang().get("private.target-offline", "target", targetName));
             return;
         }
@@ -205,9 +209,16 @@ public final class PrivateManager {
             dispatchSpy(spyLine, sender.getUniqueId(), null);
             String receiverJson = TextUtil.toJson(receiverLine);
             String spyJson = TextUtil.toJson(spyLine);
-            // 单条插件消息的硬上限是 32767 字节：两行组件（接收行 + 监听行）合计过大时
-            // 放弃监听行副本，优先保证私聊本体能够送达。
-            if (receiverJson.length() + spyJson.length() > 24000) {
+            // 全部按 UTF-8 字节计算（JSON 里的中文是 3 字节/字，字符数会低估体积）：
+            // 接收端单行上限与插件消息总上限都必须满足。
+            int receiverBytes = utf8Length(receiverJson);
+            if (receiverBytes > MAX_REMOTE_LINE_BYTES) {
+                notifySender(sender, plugin.lang().get("private.too-long"));
+                return;
+            }
+            int spyBytes = utf8Length(spyJson);
+            if (spyBytes > MAX_REMOTE_LINE_BYTES || receiverBytes + spyBytes > MAX_PRIVATE_PACKET_BYTES) {
+                // 放弃监听行副本，优先保证私聊本体能够送达
                 spyJson = null;
             }
             pending.put(id, new PendingDelivery(sender, targetName, senderLine, finalContent));
@@ -256,7 +267,7 @@ public final class PrivateManager {
             return;
         }
         // 跨服内容来自信任边界之外：先做体积校验再解析，避免超大组件先被反序列化进内存
-        if (packet.receiverLine().length() > MAX_REMOTE_LINE_LENGTH) {
+        if (utf8Length(packet.receiverLine()) > MAX_REMOTE_LINE_BYTES) {
             plugin.debug("丢弃体积异常的跨服私聊组件: " + packet.senderName());
             return;
         }
@@ -283,7 +294,7 @@ public final class PrivateManager {
         // 校验顺序：先长度上限（避免超大 JSON 先被反序列化进内存），再 fromJson（catch），最后剥离交互事件。
         Component spyLine = safeLine;
         if (packet.spyLine() != null && !packet.spyLine().isEmpty()
-                && packet.spyLine().length() <= MAX_REMOTE_LINE_LENGTH) {
+                && utf8Length(packet.spyLine()) <= MAX_REMOTE_LINE_BYTES) {
             try {
                 Component parsed = TextUtil.fromJson(packet.spyLine());
                 if (parsed != null) {
@@ -367,6 +378,11 @@ public final class PrivateManager {
         Path path = plugin.getDataFolder().toPath()
                 .resolve("data/private-logs/" + now.format(dateFormat) + ".log");
         plugin.fileWriter().append(path, line);
+    }
+
+    /** 组件 JSON 的 UTF-8 字节长度；跨服协议的所有体积判断统一用字节而不是字符。 */
+    private static int utf8Length(String text) {
+        return text == null ? 0 : text.getBytes(StandardCharsets.UTF_8).length;
     }
 
     private Component renderLine(String template, String senderName, String targetName, Component body) {

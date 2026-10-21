@@ -32,6 +32,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -102,6 +104,8 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     private volatile boolean proxyConnected;
     /** 是否需要在下一名玩家接入时补发一次全量状态请求（本服曾无人在线而漏收实时更新）。 */
     private volatile boolean resyncNeeded;
+    /** 验签失败计数，用于限频告警（密钥不一致/代理端未升级是升级后最常见的故障）。 */
+    private final AtomicLong signatureFailures = new AtomicLong();
     private volatile UUID carrierId;
     // 与 channel/available 一样由 enable() 在重载时重新赋值，而读取可能发生在
     // 异步线程（查询超时）或实体线程（入队容量），必须 volatile 保证可见性。
@@ -178,10 +182,10 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         // 停用/重载时若有查询仍在等待应答，代理不会再回包：立即以空快照回调，
         // 否则调用方（/mchat who、跨服私聊探测）会一直停留在「正在查询」状态。
         // 先整体取出再回调：回调本身可能重新发起查询，边遍历边清空会漏掉或误丢那一条。
-        List<PendingPresence> stalled = new ArrayList<>(pendingPresence.values());
+        List<Map.Entry<String, PendingPresence>> stalled = new ArrayList<>(pendingPresence.entrySet());
         pendingPresence.clear();
-        for (PendingPresence pending : stalled) {
-            pending.callback.accept(new Presence(Map.of()));
+        for (Map.Entry<String, PendingPresence> entry : stalled) {
+            completePresence(entry.getKey(), entry.getValue(), new Presence(Map.of()));
         }
         // 这里不清空 outbound：这些消息通常是「本服无人在线时暂存的禁言变更」，
         // 清掉就等于丢数据。重载由本方法 + enable() 完成，队列原样保留待补发。
@@ -252,7 +256,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             PendingPresence stalled = pendingPresence.remove(token);
             if (stalled != null) {
                 plugin.debug("在线查询未在 " + presenceTimeout + "ms 内得到代理应答。");
-                stalled.callback.accept(new Presence(Map.of()));
+                completePresence(token, stalled, new Presence(Map.of()));
             }
         }, Math.max(1, presenceTimeout / 50));
     }
@@ -370,9 +374,16 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     private void dispatch(String json) {
         String verified = verifySignature(json);
         if (verified == null) {
-            plugin.debug("丢弃未通过签名校验的跨服消息（可能为伪造的客户端插件消息）。");
+            // 客户端伪造与「两端密钥不一致 / 代理端未升级」都会走到这里：限频 warning 便于排障
+            long failures = signatureFailures.incrementAndGet();
+            if (failures == 1L || failures % 100L == 0L) {
+                plugin.getLogger().warning("丢弃未通过签名校验的跨服消息（累计 " + failures
+                        + " 条）：请确认后端 network.yml 与 Velocity 端 config.yml 的 shared-secret 完全一致，"
+                        + "且代理端插件版本不低于 1.7.0。");
+            }
             return;
         }
+        signatureFailures.set(0);
         try {
             JsonObject object = JsonParser.parseString(verified).getAsJsonObject();
             String type = object.get("type").getAsString();
@@ -470,8 +481,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
                     }
                 }
             } catch (Throwable t) {
-                pendingPresence.remove(token, pending);
-                pending.callback.accept(new Presence(Map.of()));
+                completePresence(token, pending, new Presence(Map.of()));
                 return;
             }
             pending.nextPage++;
@@ -480,14 +490,26 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             }
             completed = new Presence(new LinkedHashMap<>(pending.acc));
         }
+        completePresence(token, pending, completed);
+    }
+
+    /**
+     * 完成一次在线查询回调。超时任务、停用回调与分页处理可能同时到达，
+     * 用 CAS 保证同一 token 只回调一次（否则 /mchat who 会打印两次、跨服私聊会重复投递）。
+     */
+    private void completePresence(String token, PendingPresence pending, Presence presence) {
+        if (!pending.done.compareAndSet(false, true)) {
+            return;
+        }
         pendingPresence.remove(token, pending);
-        pending.callback.accept(completed);
+        pending.callback.accept(presence);
     }
 
     /** 分页应答的累计状态；同一次查询可能分多页到达。 */
     private static final class PendingPresence {
         final Consumer<Presence> callback;
         final Map<String, List<String>> acc = new LinkedHashMap<>();
+        final AtomicBoolean done = new AtomicBoolean();
         int nextPage = 1;
 
         PendingPresence(Consumer<Presence> callback) {
@@ -540,6 +562,8 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         object.addProperty("src", serverId());
         object.addProperty("id", UUID.randomUUID().toString());
         object.addProperty("ts", System.currentTimeMillis());
+        // 协议版本：代理端据此决定是否分页下发（旧后端不带该字段 → 保持旧格式）
+        object.addProperty("proto", 2);
         object.add("data", gson.toJsonTree(payload));
         return object.toString();
     }
@@ -575,9 +599,15 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             } catch (Throwable t) {
                 plugin.debug("发送跨服消息失败: " + t.getMessage());
                 carrierId = null;
-                // 需要补发的消息（禁言变更等）失败后重新入队，等下一名玩家接入时重试
                 if (queueIfOffline) {
-                    enqueue(data);
+                    if (shouldReplayOnFailure(json)) {
+                        // 聊天/私聊可以安全重放，等下一名玩家接入时重试
+                        enqueue(data);
+                    } else {
+                        // 状态类消息不重放旧值：否则「解除」之后补发的旧 KV_SET/MUTE_UPDATE
+                        // 会把已解除的禁言重新写回去。改为标记需要一次权威全量同步。
+                        resyncNeeded = true;
+                    }
                 }
             }
         });
@@ -591,6 +621,18 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             outbound.addLast(data);
         }
         plugin.debug("本服当前无玩家在线，跨服消息已暂存，待玩家接入后补发。");
+    }
+
+    /** 发送失败时是否适合重放：状态类消息交给下一次全量同步修复，避免旧值覆盖新状态。 */
+    private boolean shouldReplayOnFailure(String json) {
+        try {
+            JsonObject object = JsonParser.parseString(json).getAsJsonObject();
+            String type = object.has("type") ? object.get("type").getAsString() : "";
+            return !(TYPE_STATE_REQ.equals(type) || TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type)
+                    || "MUTE_UPDATE".equals(type));
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     private Player carrier() {

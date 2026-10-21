@@ -8,6 +8,7 @@ generic:
   invalid-number: "<red>无效的数字：<white>{value}</white>。"
   reloaded: "<green>配置已重载。"
   reloaded-module: "<green>模块 <white>{module}</white> 已重载。"
+  reload-partial: "<yellow>模块 <white>{module}</white> 已重载，但部分依赖模块重载失败，请查看控制台。"
   module-not-found: "<red>找不到模块 <white>{module}</white>。"
   unknown-command: "<red>未知子命令，输入 <white>/mchat help</white> 查看帮助。"
   cooldown-command: "<red>操作过于频繁，请等待 <white>{seconds}s</white> 后再试。"
@@ -89,6 +90,7 @@ private:
   spy-off: "<gray>已关闭私聊监听。"
   usage-msg: "<gray>/msg <玩家> <内容>"
   usage-reply: "<gray>/reply <内容>"
+  too-long: "<red>消息内容过长，无法跨服发送，请缩短后重试。"
 
 who:
   requesting: "<gray>正在查询跨服在线玩家…"

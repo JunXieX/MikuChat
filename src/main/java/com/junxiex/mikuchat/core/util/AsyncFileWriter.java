@@ -8,8 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -27,7 +28,8 @@ import java.util.concurrent.TimeUnit;
 public final class AsyncFileWriter {
 
     private final MikuChat plugin;
-    private final Map<Path, BufferedWriter> writers = new HashMap<>();
+    // 兜底关闭路径可能由调用线程执行，因此用并发 Map；正常写入仍只由写线程访问
+    private final Map<Path, BufferedWriter> writers = new ConcurrentHashMap<>();
     /**
      * 最近使用过的文件路径（LRU）。日志按天分文件，跨天后全是新路径，若句柄只增不减，
      * 长期运行会每天泄漏句柄，Windows 上旧日志还会因仍被占用而无法被保留策略删除。
@@ -94,10 +96,11 @@ public final class AsyncFileWriter {
             }
             writer.write(line);
             writer.newLine();
-            // 仅在待写队列排空时 flush：突发期间合并刷盘、减少系统调用，突发结束（或空闲）逐行落盘；
-            // 写入线程是单线程，此处无需额外同步
+            // 仅在待写队列排空时统一 flush：突发期间合并刷盘、减少系统调用，突发结束（或空闲）落盘。
+            // 缓冲区是按文件独立的，必须 flush 全部打开的文件，否则低流量日志（如私聊留档）
+            // 可能在持续聊天负载下长时间只停留在 JVM 缓冲里。
             if (executor.getQueue().isEmpty()) {
-                writer.flush();
+                flushAll();
             }
         } catch (Exception e) {
             // 句柄可能已失效（文件被外部删除/移动），移除后由下次写入重建
@@ -125,6 +128,17 @@ public final class AsyncFileWriter {
             recentOrder.removeFirst();
             if (!oldest.equals(keep)) {
                 closeQuietly(writers.remove(oldest));
+            }
+        }
+    }
+
+    /** flush 所有已打开的句柄（最多 {@link #MAX_OPEN_FILES} 个），单个失败不影响其它文件。 */
+    private void flushAll() {
+        for (BufferedWriter writer : writers.values()) {
+            try {
+                writer.flush();
+            } catch (Throwable ignored) {
+                // 句柄已失效时由下一次 write 的错误路径重建
             }
         }
     }
@@ -166,18 +180,23 @@ public final class AsyncFileWriter {
             Thread.currentThread().interrupt();
         }
         if (!queued) {
-            // 写入线程可能刚被强制中断、仍在收尾，再等一小会儿，避免与关闭句柄并发操作 writers
+            // 写入线程可能刚被强制中断、仍在收尾，再等一小会儿
             try {
                 executor.awaitTermination(1, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            closeAll();
+            if (executor.isTerminated()) {
+                // 写线程已完全退出（recentOrder 等单线程结构不再被访问），可安全兜底关闭
+                closeAll();
+            } else {
+                plugin.getLogger().warning("文件写入线程未在关闭等待内结束，跳过句柄关闭（进程退出后由操作系统回收）。");
+            }
         }
     }
 
     private void closeAll() {
-        for (BufferedWriter writer : writers.values()) {
+        for (BufferedWriter writer : new ArrayList<>(writers.values())) {
             closeQuietly(writer);
         }
         writers.clear();

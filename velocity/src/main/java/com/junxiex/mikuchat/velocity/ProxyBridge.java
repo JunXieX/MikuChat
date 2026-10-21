@@ -57,6 +57,12 @@ public final class ProxyBridge {
      */
     private static final int MAX_MESSAGE_BYTES = 8192;
 
+    /** 协议版本：>=2 的后端支持分页与签名。 */
+    private static final int PROTO_VERSION = 2;
+
+    /** 单条 relay 转发的硬上限（贴近 serverbound custom payload 的 32767 字节上限）。 */
+    private static final int MAX_RELAY_BYTES = 30000;
+
     private final ProxyServer proxy;
     private final Logger logger;
     private final MinecraftChannelIdentifier channel;
@@ -93,9 +99,11 @@ public final class ProxyBridge {
             JsonObject data = envelope.has("data") && envelope.get("data").isJsonObject()
                     ? envelope.getAsJsonObject("data") : new JsonObject();
             RegisteredServer origin = connection.getServer();
+            // 旧版后端不带 proto 字段：按旧格式单条下发，避免滚动升级期间把旧后端的缓存覆盖成最后一页
+            boolean paged = envelope.has("proto") && envelope.get("proto").getAsInt() >= PROTO_VERSION;
             switch (type) {
-                case TYPE_WHO_REQ -> replyPresence(origin, data);
-                case TYPE_STATE_REQ -> replyState(origin);
+                case TYPE_WHO_REQ -> replyPresence(origin, data, paged);
+                case TYPE_STATE_REQ -> replyState(origin, paged);
                 case TYPE_KV_SET -> store.put(text(data, "key"), text(data, "field"), text(data, "value"));
                 case TYPE_KV_DEL -> store.remove(text(data, "key"), text(data, "field"));
                 default -> relay(origin, event.getData());
@@ -114,7 +122,7 @@ public final class ProxyBridge {
      * 注册的服务器名完全一致。若用 {@code src} 过滤，配置不同名时本服玩家会被当成
      * 「其它服务器」列出来，造成自己看得到自己的重复条目。
      */
-    private void replyPresence(RegisteredServer origin, JsonObject data) {
+    private void replyPresence(RegisteredServer origin, JsonObject data, boolean paged) {
         String originName = origin.getServerInfo().getName();
         Map<String, List<String>> servers = new LinkedHashMap<>();
         for (Player player : proxy.getAllPlayers()) {
@@ -125,6 +133,13 @@ public final class ProxyBridge {
                 continue;
             }
             servers.computeIfAbsent(serverName, key -> new ArrayList<>()).add(player.getUsername());
+        }
+        if (!paged) {
+            JsonObject payload = new JsonObject();
+            payload.addProperty("token", text(data, "token"));
+            payload.add("servers", gson.toJsonTree(servers));
+            sendTo(origin, TYPE_WHO_RES, payload);
+            return;
         }
         List<Map<String, List<String>>> pages = paginatePresence(servers);
         int total = pages.size();
@@ -148,12 +163,19 @@ public final class ProxyBridge {
      * 禁言表可能很大（数千条），整表塞进一条插件消息会超过 32767 字节硬上限并导致同步失败，
      * 因此按字节预算拆页，后端聚合后再覆盖。
      */
-    private void replyState(RegisteredServer origin) {
+    private void replyState(RegisteredServer origin, boolean paged) {
         Map<String, Map<String, String>> snapshot = store.snapshot();
         if (snapshot.isEmpty()) {
             snapshot = Map.of(MUTE_KEY, Map.of());
         }
         for (Map.Entry<String, Map<String, String>> entry : snapshot.entrySet()) {
+            if (!paged) {
+                JsonObject payload = new JsonObject();
+                payload.addProperty("key", entry.getKey());
+                payload.add("map", gson.toJsonTree(entry.getValue()));
+                sendTo(origin, TYPE_STATE_SYNC, payload);
+                continue;
+            }
             List<Map<String, String>> pages = paginate(entry.getValue());
             int total = pages.size();
             for (int i = 0; i < total; i++) {
@@ -191,6 +213,11 @@ public final class ProxyBridge {
                 ? envelope.getAsJsonObject("data") : new JsonObject();
         String targetServer = TYPE_PRIVATE.equals(type) ? text(payload, "targetServer") : "";
         byte[] sealed = seal(envelope);
+        if (sealed.length > MAX_RELAY_BYTES) {
+            // 代理→后端是 serverbound custom payload，硬上限 32767：超限会让接收端解码失败并断开连接
+            logger.warn("跨服消息过大（{} 字节），已丢弃以避免接收端断连。", sealed.length);
+            return;
+        }
         if (!targetServer.isEmpty()) {
             Optional<RegisteredServer> target = proxy.getServer(targetServer);
             if (target.isPresent()) {
@@ -218,7 +245,10 @@ public final class ProxyBridge {
         Map<String, V> current = new LinkedHashMap<>();
         int currentBytes = 0;
         for (Map.Entry<String, V> entry : entries.entrySet()) {
-            int size = gson.toJson(entry).getBytes(StandardCharsets.UTF_8).length;
+            // 不能序列化 Map.Entry 本身：Gson 会反射 java.util.LinkedHashMap$Entry 并失败。
+            // 只对 key / value 分别计算字节数即可。
+            int size = gson.toJson(entry.getKey()).getBytes(StandardCharsets.UTF_8).length
+                    + gson.toJson(entry.getValue()).getBytes(StandardCharsets.UTF_8).length + 1;
             if (!current.isEmpty() && currentBytes + size > MAX_MESSAGE_BYTES) {
                 pages.add(current);
                 current = new LinkedHashMap<>();
@@ -281,6 +311,7 @@ public final class ProxyBridge {
         envelope.addProperty("src", PROXY_SOURCE);
         envelope.addProperty("id", UUID.randomUUID().toString());
         envelope.addProperty("ts", System.currentTimeMillis());
+        envelope.addProperty("proto", PROTO_VERSION);
         envelope.add("data", payload);
         if (!server.sendPluginMessage(channel, seal(envelope)) && debug) {
             logger.info("服务器 {} 无可用连接，{} 未送达。", server.getServerInfo().getName(), type);

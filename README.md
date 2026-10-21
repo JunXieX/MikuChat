@@ -112,6 +112,9 @@ MikuChat 是一套面向 Paper / Folia 服务端的聊天管理插件，配合 V
 **Q：升级到 1.7.0 后跨服失效，日志提示「shared-secret 为空」？**
 A：1.7.0 起跨服消息必须签名。请在后端 `network.yml` 与 Velocity 端 `config.yml` 配置相同的 `shared-secret` 后重启两端。
 
+**Q：可以只升级后端或只升级代理端吗？**
+A：不可以。1.7.0 的签名与分页协议是两端配套的，请**同时**替换后端与代理端两个 jar；单独升级任一端会导致跨服消息被丢弃（后端日志会输出「未通过签名校验」限频告警）。
+
 **Q：`/mchat info` 显示「通道已注册（未连通代理）」？**
 A：说明本服插件消息通道已注册但还没收到过代理端应答。请确认 Velocity 端已安装 `MikuChat-Velocity`、两端 `channel` 一致、`shared-secret` 一致，并且 `server-id` 与 `velocity.toml` 的服务器名一致。
 

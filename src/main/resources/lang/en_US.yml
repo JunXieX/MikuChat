@@ -8,6 +8,7 @@ generic:
   invalid-number: "<red>Invalid number: <white>{value}</white>."
   reloaded: "<green>Configuration reloaded."
   reloaded-module: "<green>Module <white>{module}</white> reloaded."
+  reload-partial: "<yellow>Module <white>{module}</white> reloaded, but some dependent modules failed to reload. Check the console."
   module-not-found: "<red>Module <white>{module}</white> not found."
   unknown-command: "<red>Unknown subcommand. Type <white>/mchat help</white>."
   cooldown-command: "<red>Too frequent. Wait <white>{seconds}s</white> before trying again."
@@ -89,6 +90,7 @@ private:
   spy-off: "<gray>Private message spy disabled."
   usage-msg: "<gray>/msg <player> <message>"
   usage-reply: "<gray>/reply <message>"
+  too-long: "<red>The message is too long to send across servers. Please shorten it."
 
 who:
   requesting: "<gray>Querying cross-server players..."
