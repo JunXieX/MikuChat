@@ -71,6 +71,11 @@ public final class MuteManager implements MuteService {
     private final Set<UUID> touchedDuringSync = new HashSet<>();
     /** 本次同步用于决定「旧格式文件迁移」：代理快照为空时才回填本地历史，否则以代理为准。 */
     private boolean legacySync;
+    /**
+     * 旧格式尚未完成迁移：此期间本地写入不写 format-version，
+     * 否则「升级后先独立运行、后接代理」时迁移标记会被提前抹掉，历史禁言会在首个空快照时丢失。
+     */
+    private boolean migrationPending;
 
     public MuteManager(MikuChat plugin) {
         this.plugin = plugin;
@@ -87,6 +92,7 @@ public final class MuteManager implements MuteService {
             pendingDeletes.clear();
             touchedDuringSync.clear();
             boolean legacyFormat = loadLocalFile(loaded);
+            this.migrationPending = legacyFormat;
             loaded.entrySet().removeIf(entry -> entry.getValue().expired());
             this.cache = new ConcurrentHashMap<>(loaded);
             this.statePage = 0;
@@ -178,6 +184,7 @@ public final class MuteManager implements MuteService {
         // 旧格式迁移且代理为空时保留的本地记录：它们没有出现在快照里，必须强制回填一次
         Set<UUID> legacyForce = new HashSet<>();
         if (legacySync) {
+            migrationPending = false;
             // 旧格式迁移：代理端为空（首次由本服接管）才保留本地历史并回填；
             // 代理端已有数据说明它才是权威，本地独有记录可能早已被别服解除，直接丢弃并告警。
             legacySync = false;
@@ -312,7 +319,9 @@ public final class MuteManager implements MuteService {
             try {
                 UUID uuid = UUID.fromString(key);
                 loaded.put(uuid, info);
-                if (legacy || isPending(raw)) {
+                // 只有真正带 P| 前缀的「离线新增」记录才进待回填集合；
+                // 旧格式记录统一交给 legacySync 逻辑按「代理是否为空」决定回填还是丢弃。
+                if (isPending(raw)) {
                     pendingUpload.add(uuid);
                 }
             } catch (IllegalArgumentException ignored) {
@@ -490,7 +499,9 @@ public final class MuteManager implements MuteService {
             File file = new File(plugin.getDataFolder(), "mute.yml");
             YamlConfiguration yaml = file.exists()
                     ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
-            yaml.set("format-version", FORMAT_VERSION);
+            if (!migrationPending) {
+                yaml.set("format-version", FORMAT_VERSION);
+            }
             yaml.set("mutes." + uuid, value);
             try {
                 com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);
@@ -510,7 +521,9 @@ public final class MuteManager implements MuteService {
             File file = new File(plugin.getDataFolder(), "mute.yml");
             YamlConfiguration yaml = file.exists()
                     ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
-            yaml.set("format-version", FORMAT_VERSION);
+            if (!migrationPending) {
+                yaml.set("format-version", FORMAT_VERSION);
+            }
             yaml.set("deletes", copy);
             try {
                 com.junxiex.mikuchat.core.util.AtomicFiles.saveYaml(yaml, file);

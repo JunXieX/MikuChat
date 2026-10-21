@@ -95,7 +95,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
      * 状态类消息不能像聊天那样原样重放（旧 KV_SET 会覆盖后来的解除），
      * 因此这里以「同一 uuid 只保留最后一次变更」的方式重试。
      */
-    private final Map<String, byte[]> pendingState = new LinkedHashMap<>();
+    private final Map<String, PendingState> pendingState = new LinkedHashMap<>();
     /**
      * 可信来源服务器白名单（{@code network.yml: trusted-servers}）。为空表示不校验（兼容旧配置）；
      * 一旦配置，只接受 {@code src} 命中的消息，防止后端脱离代理运行时被伪造的插件消息注入。
@@ -350,15 +350,17 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
                 plugin.debug("已补发 " + queued.size() + " 条暂存的跨服消息。");
             }
             // 补发合并后的状态类消息（每个 uuid 只保留最后一次变更）
-            Map<String, byte[]> states;
+            Map<String, PendingState> states;
             synchronized (pendingState) {
                 states = pendingState.isEmpty() ? Map.of() : new LinkedHashMap<>(pendingState);
             }
-            for (Map.Entry<String, byte[]> entry : states.entrySet()) {
+            for (Map.Entry<String, PendingState> entry : states.entrySet()) {
+                PendingState pending = entry.getValue();
                 try {
-                    player.sendPluginMessage(plugin, channel, entry.getValue());
+                    player.sendPluginMessage(plugin, channel, pending.data());
                     synchronized (pendingState) {
-                        pendingState.remove(entry.getKey(), entry.getValue());
+                        // 只移除这一条快照：若期间被更新的变更替换，保留新值
+                        pendingState.remove(entry.getKey(), pending);
                     }
                 } catch (Throwable t) {
                     failure = t;
@@ -618,12 +620,19 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
                     return;
                 }
                 carrier.sendPluginMessage(plugin, channel, data);
-                // 该 uuid 的最新状态已经送达，清掉可能残留的旧待发状态
-                if (!pendingState.isEmpty()) {
-                    String stateKey = stateKeyOf(json);
-                    if (stateKey != null) {
+                // 同一目的地/同一类别的旧待发状态已被本次更新覆盖，清掉它（按 ts 判断新旧）
+                boolean hasPending;
+                synchronized (pendingState) {
+                    hasPending = !pendingState.isEmpty();
+                }
+                if (hasPending) {
+                    StateRef ref = stateRefOf(json);
+                    if (ref != null) {
                         synchronized (pendingState) {
-                            pendingState.remove(stateKey);
+                            PendingState queued = pendingState.get(ref.key());
+                            if (queued != null && queued.ts() <= ref.ts()) {
+                                pendingState.remove(ref.key());
+                            }
                         }
                     }
                 }
@@ -642,14 +651,17 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
      * 状态类消息按 uuid 合并到 pendingState，只重试最后一次变更，避免旧值覆盖新状态。
      */
     private void storeOrEnqueue(String json, byte[] data) {
-        String stateKey = stateKeyOf(json);
-        if (stateKey == null) {
+        StateRef ref = stateRefOf(json);
+        if (ref == null) {
             enqueue(data);
             return;
         }
         synchronized (pendingState) {
-            pendingState.remove(stateKey);
-            pendingState.put(stateKey, data);
+            PendingState existing = pendingState.get(ref.key());
+            // 较新者胜：只有更新的变更才覆盖待发项，避免跨区域线程顺序反转时旧值覆盖新值
+            if (existing == null || ref.ts() >= existing.ts()) {
+                pendingState.put(ref.key(), new PendingState(data, ref.ts()));
+            }
             while (pendingState.size() > queueCapacity) {
                 var iterator = pendingState.keySet().iterator();
                 if (!iterator.hasNext()) {
@@ -662,22 +674,41 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         resyncNeeded = true;
     }
 
-    /** 状态类消息的合并键（KV_SET/KV_DEL/MUTE_UPDATE 共用 uuid，删除可覆盖写入）。 */
-    private String stateKeyOf(String json) {
+    /**
+     * 状态类消息的合并键：必须按「目的地/类别」区分。
+     * <p>
+     * KV_SET / KV_DEL 写的是代理端权威存储，MUTE_UPDATE 只是转发给其它后端的实时广播；
+     * 二者若共用一个键，广播会覆盖（或成功路径误删）权威写入，导致空服控制台 mute/unmute
+     * 丢失并在下一次全量同步时被静默回滚。
+     */
+    private StateRef stateRefOf(String json) {
         try {
             JsonObject object = JsonParser.parseString(json).getAsJsonObject();
             String type = object.has("type") ? object.get("type").getAsString() : "";
-            if (!(TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type) || "MUTE_UPDATE".equals(type))) {
-                return null;
-            }
+            long ts = object.has("ts") ? object.get("ts").getAsLong() : 0L;
             JsonObject data = object.has("data") && object.get("data").isJsonObject()
                     ? object.getAsJsonObject("data") : new JsonObject();
-            String field = data.has("field") ? data.get("field").getAsString()
-                    : data.has("uuid") ? data.get("uuid").getAsString() : "";
-            return "state:" + field;
+            if (TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type)) {
+                String key = data.has("key") ? data.get("key").getAsString() : "";
+                String field = data.has("field") ? data.get("field").getAsString() : "";
+                return new StateRef("kv:" + key + ":" + field, ts);
+            }
+            if ("MUTE_UPDATE".equals(type)) {
+                String uuid = data.has("uuid") ? data.get("uuid").getAsString() : "";
+                return new StateRef("upd:" + uuid, ts);
+            }
+            return null;
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /** 状态类消息的合并键与时间戳。 */
+    private record StateRef(String key, long ts) {
+    }
+
+    /** 待重发的状态消息（按类别合并，最多保留每个键最新的一条）。 */
+    private record PendingState(byte[] data, long ts) {
     }
 
     private void enqueue(byte[] data) {

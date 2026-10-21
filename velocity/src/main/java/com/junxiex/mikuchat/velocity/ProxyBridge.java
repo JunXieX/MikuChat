@@ -257,10 +257,8 @@ public final class ProxyBridge {
                 current = new LinkedHashMap<>();
                 currentBytes = 0;
             }
-            if (size > MAX_MESSAGE_BYTES) {
-                // 单条就超页预算：无法再拆，交由统一出口的长度校验丢弃并告警
-                reportOversized(size, "STATE_ENTRY");
-            }
+            // 单条超过页预算时无法再拆，仍会放入单独一页；真正的丢弃由 sendTo 出口判断，
+            // 这里不再误报「已丢弃」。
             current.put(entry.getKey(), entry.getValue());
             currentBytes += size;
         }
