@@ -38,7 +38,9 @@ public final class MikuChatCommand implements BasicCommand {
             new Sub("help", "/mchat help", "查看命令帮助", null),
             new Sub("channel", "/mchat channel <id|list>", "切换或查看聊天频道", null),
             new Sub("toggle", "/mchat toggle mention", "开关 @ 提醒", null),
-            new Sub("spy", "/mchat spy", "开关私聊监听", "mikuchat.private.spy"),
+            // spy 的权限节点来自 private.yml 的 permissions.spy，且 PrivateManager 可能在命令注册后才就绪，
+            // 因此不在这里写死静态权限，改由 run() 跳过通用门禁、spy() 用 PrivateManager.spyPermission() 动态校验。
+            new Sub("spy", "/mchat spy", "开关私聊监听", null),
             new Sub("who", "/mchat who", "查看跨服在线玩家", "mikuchat.command.who"),
             new Sub("log", "/mchat log <玩家|关键词> [页码]", "查询聊天记录", "mikuchat.command.log"),
             new Sub("filter", "/mchat filter test <文本>", "测试过滤结果", "mikuchat.command.filter"),
@@ -74,7 +76,10 @@ public final class MikuChatCommand implements BasicCommand {
             sender.sendMessage(plugin.lang().get("generic.unknown-command"));
             return;
         }
-        if (definition.permission() != null && !sender.hasPermission(definition.permission())) {
+        // spy 的权限节点是配置项（reload 后可能变化），不能在 Sub 构造期写死，
+        // 故跳过通用门禁，统一交给 spy() 在执行期用 PrivateManager.spyPermission() 校验。
+        if (!"spy".equals(sub) && definition.permission() != null
+                && !sender.hasPermission(definition.permission())) {
             sender.sendMessage(plugin.lang().get("generic.no-permission"));
             return;
         }
@@ -92,10 +97,23 @@ public final class MikuChatCommand implements BasicCommand {
         }
     }
 
+    /**
+     * 判断发送者能否看到并使用某个子命令。spy 的权限节点来自 PrivateManager 的配置，
+     * 只能在执行期读取；私聊模块未就绪时回退默认节点，避免把该子命令误暴露给所有人。
+     */
+    private boolean mayUse(CommandSender sender, Sub sub) {
+        String permission = sub.permission();
+        if ("spy".equals(sub.name())) {
+            PrivateManager priv = plugin.services().find(PrivateManager.class).orElse(null);
+            permission = priv == null ? "mikuchat.private.spy" : priv.spyPermission();
+        }
+        return permission == null || sender.hasPermission(permission);
+    }
+
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(plugin.lang().get("command.help-header"));
         for (Sub sub : subs) {
-            if (sub.permission() != null && !sender.hasPermission(sub.permission())) {
+            if (!mayUse(sender, sub)) {
                 continue;
             }
             // usage / description 是纯文本，必须先转义再拼进模板：
@@ -163,13 +181,14 @@ public final class MikuChatCommand implements BasicCommand {
             sender.sendMessage(plugin.lang().get("generic.player-only"));
             return;
         }
-        if (!player.hasPermission("mikuchat.private.spy")) {
-            player.sendMessage(plugin.lang().get("generic.no-permission"));
-            return;
-        }
         PrivateManager priv = plugin.services().find(PrivateManager.class).orElse(null);
         if (priv == null) {
             player.sendMessage(plugin.lang().get("generic.unknown-command"));
+            return;
+        }
+        // 权限节点是配置项，必须在执行期读取（reload 后立即生效），不能依赖 Sub 的静态权限
+        if (!player.hasPermission(priv.spyPermission())) {
+            player.sendMessage(plugin.lang().get("generic.no-permission"));
             return;
         }
         boolean enabled = priv.toggleSpy(player);
@@ -178,7 +197,9 @@ public final class MikuChatCommand implements BasicCommand {
 
     private void who(CommandSender sender) {
         NetworkService network = plugin.services().find(NetworkService.class).orElse(null);
-        if (network == null || !network.available()) {
+        // 用 connected() 而不是 available()：单机服上通道注册也会成功，
+        // 否则 /mchat who 会白等一个查询超时再显示「没有在线玩家」。
+        if (network == null || !network.connected()) {
             sender.sendMessage(plugin.lang().get("who.disabled"));
             return;
         }
@@ -284,7 +305,9 @@ public final class MikuChatCommand implements BasicCommand {
         FilterManager filterManager = plugin.services().find(FilterManager.class).orElse(null);
         info.put("屏蔽词", filterManager == null ? "0" : String.valueOf(filterManager.wordCount()));
         NetworkService network = plugin.services().find(NetworkService.class).orElse(null);
-        info.put("跨服", network != null && network.available() ? "已连接" : "未启用");
+        info.put("跨服", network == null ? "未启用"
+                : network.connected() ? "已连接"
+                : network.available() ? "通道已注册（等待代理应答）" : "未启用");
         info.put("在线", String.valueOf(Bukkit.getOnlinePlayers().size()));
         info.forEach((key, value) -> sender.sendMessage(
                 plugin.lang().get("command.info-line", "key", key, "value", value)));
@@ -300,9 +323,23 @@ public final class MikuChatCommand implements BasicCommand {
             // 重载涉及磁盘 I/O，放到全局线程执行，避免阻塞触发的区域线程
             plugin.scheduler().global(() -> {
                 boolean ok = plugin.moduleManager().reload(module);
-                notifySender(sender, ok
-                        ? plugin.lang().get("generic.reloaded-module", "module", module)
-                        : plugin.lang().get("generic.module-not-found", "module", module));
+                boolean depsOk = true;
+                if (ok && "network".equalsIgnoreCase(module)) {
+                    // 网络模块重建后，chat/mute/private 在各自 enable 时建立的订阅不会自动补上：
+                    // 它们只在自身 reload 时才会重新 subscribe。这里一并重载依赖方，
+                    // 避免 /mchat reload network 之后「跨服通道已就绪、却收不到任何跨服消息」。
+                    depsOk = plugin.moduleManager().reload("chat");
+                    depsOk = plugin.moduleManager().reload("mute") && depsOk;
+                    depsOk = plugin.moduleManager().reload("private") && depsOk;
+                }
+                if (!ok) {
+                    notifySender(sender, plugin.lang().get("generic.module-not-found", "module", module));
+                } else if (!depsOk) {
+                    // 依赖模块失败不能被「重载完成」掩盖，否则运维会误以为跨服订阅已恢复
+                    notifySender(sender, plugin.lang().get("generic.reload-partial", "module", module));
+                } else {
+                    notifySender(sender, plugin.lang().get("generic.reloaded-module", "module", module));
+                }
             });
             return;
         }
@@ -330,7 +367,7 @@ public final class MikuChatCommand implements BasicCommand {
             String prefix = args[0].toLowerCase(Locale.ROOT);
             List<String> result = new ArrayList<>();
             for (Sub sub : subs) {
-                if (sub.permission() != null && !sender.hasPermission(sub.permission())) {
+                if (!mayUse(sender, sub)) {
                     continue;
                 }
                 if (sub.name().startsWith(prefix)) {

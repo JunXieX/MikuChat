@@ -8,37 +8,48 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 异步文件追加写入器。所有磁盘写入集中到单线程，避免阻塞服务器线程，
  * 同时保证同一文件的写入顺序。
  * <p>
- * 每个文件维持一个复用句柄（写入后立即 flush），避免"每行开-写-关一次文件"；
- * 关闭时先排队执行关闭任务，确保已入队的日志全部落盘。
+ * 每个文件维持一个复用句柄，避免"每行开-写-关一次文件"；待写队列有界（容量见
+ * {@link #QUEUE_CAPACITY}），磁盘卡顿时宁可丢弃并限频告警，也不让内存无界积压；
+ * 仅在队列排空时 flush，既合并突发写入的刷盘开销，又保证空闲时逐行落盘；
+ * 关闭时在所有已入队写入之后兜底 flush + close，确保日志不丢。
  */
 public final class AsyncFileWriter {
 
     private final MikuChat plugin;
-    private final Map<Path, BufferedWriter> writers = new HashMap<>();
+    // 兜底关闭路径可能由调用线程执行，因此用并发 Map；正常写入仍只由写线程访问
+    private final Map<Path, BufferedWriter> writers = new ConcurrentHashMap<>();
     /**
      * 最近使用过的文件路径（LRU）。日志按天分文件，跨天后全是新路径，若句柄只增不减，
      * 长期运行会每天泄漏句柄，Windows 上旧日志还会因仍被占用而无法被保留策略删除。
      * 仅在写线程内访问，无需额外同步。
      */
     private static final int MAX_OPEN_FILES = 8;
+    private static final int QUEUE_CAPACITY = 4096;
     private final java.util.Deque<Path> recentOrder = new java.util.ArrayDeque<>();
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-        Thread thread = new Thread(r, "MikuChat-FileWriter");
-        thread.setDaemon(true);
-        return thread;
-    });
+    /** 队列满时被丢弃的行数，用于限频告警（只在首次与每满 1000 条时提示）。 */
+    private final java.util.concurrent.atomic.AtomicLong dropped = new java.util.concurrent.atomic.AtomicLong();
+    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(QUEUE_CAPACITY),
+            r -> {
+                Thread thread = new Thread(r, "MikuChat-FileWriter");
+                thread.setDaemon(true);
+                return thread;
+            },
+            new ThreadPoolExecutor.AbortPolicy());
 
     public AsyncFileWriter(MikuChat plugin) {
         this.plugin = plugin;
@@ -51,7 +62,18 @@ public final class AsyncFileWriter {
         try {
             executor.execute(() -> write(path, line));
         } catch (RejectedExecutionException e) {
-            // 与 shutdown() 竞争导致的关闭后提交，直接丢弃即可
+            // 与 shutdown() 竞争导致的关闭后提交直接丢弃；队列满（磁盘卡顿 / 日志暴增）则计数并限频告警
+            if (!closed.get()) {
+                reportDropped();
+            }
+        }
+    }
+
+    /** 丢弃计数：首次与每满 1000 条提示一次，避免告警本身刷爆日志。 */
+    private void reportDropped() {
+        long total = dropped.incrementAndGet();
+        if (total == 1L || total % 1000L == 0L) {
+            plugin.getLogger().warning("日志写入队列已满，已丢弃 " + total + " 条日志（请检查磁盘 IO 或日志量）。");
         }
     }
 
@@ -74,7 +96,12 @@ public final class AsyncFileWriter {
             }
             writer.write(line);
             writer.newLine();
-            writer.flush();
+            // 仅在待写队列排空时统一 flush：突发期间合并刷盘、减少系统调用，突发结束（或空闲）落盘。
+            // 缓冲区是按文件独立的，必须 flush 全部打开的文件，否则低流量日志（如私聊留档）
+            // 可能在持续聊天负载下长时间只停留在 JVM 缓冲里。
+            if (executor.getQueue().isEmpty()) {
+                flushAll();
+            }
         } catch (Exception e) {
             // 句柄可能已失效（文件被外部删除/移动），移除后由下次写入重建
             closeQuietly(writers.remove(path));
@@ -105,6 +132,22 @@ public final class AsyncFileWriter {
         }
     }
 
+    /**
+     * flush 所有已打开的句柄（最多 {@link #MAX_OPEN_FILES} 个），单个失败不影响其它文件。
+     * 失败时关闭并移除该句柄，让下一次写入重建，同时输出一次告警（否则磁盘异常会静默丢日志）。
+     */
+    private void flushAll() {
+        for (Map.Entry<Path, BufferedWriter> entry : writers.entrySet()) {
+            try {
+                entry.getValue().flush();
+            } catch (IOException e) {
+                closeQuietly(writers.remove(entry.getKey()));
+                plugin.getLogger().warning("刷新日志文件失败，已关闭句柄等待重建: "
+                        + entry.getKey() + " (" + e.getMessage() + ")");
+            }
+        }
+    }
+
     private void closeQuietly(BufferedWriter writer) {
         if (writer == null) {
             return;
@@ -124,7 +167,13 @@ public final class AsyncFileWriter {
         }
         // 先置关闭标记（丢弃关闭后的迟到写入），再排队关闭任务：
         // 单线程执行器保证关闭任务排在所有已提交写入之后
-        executor.execute(this::closeAll);
+        boolean queued = true;
+        try {
+            executor.execute(this::closeAll);
+        } catch (RejectedExecutionException e) {
+            // 有界队列可能已满：关闭任务排不进去时，退化为等写入任务结束后由当前线程兜底关闭
+            queued = false;
+        }
         executor.shutdown();
         try {
             if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
@@ -135,10 +184,24 @@ public final class AsyncFileWriter {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+        if (!queued) {
+            // 写入线程可能刚被强制中断、仍在收尾，再等一小会儿
+            try {
+                executor.awaitTermination(1, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (executor.isTerminated()) {
+                // 写线程已完全退出（recentOrder 等单线程结构不再被访问），可安全兜底关闭
+                closeAll();
+            } else {
+                plugin.getLogger().warning("文件写入线程未在关闭等待内结束，跳过句柄关闭（进程退出后由操作系统回收）。");
+            }
+        }
     }
 
     private void closeAll() {
-        for (BufferedWriter writer : writers.values()) {
+        for (BufferedWriter writer : new ArrayList<>(writers.values())) {
             closeQuietly(writer);
         }
         writers.clear();

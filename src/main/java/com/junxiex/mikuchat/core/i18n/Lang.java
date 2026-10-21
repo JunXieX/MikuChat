@@ -16,9 +16,14 @@ import java.util.Map;
  */
 public final class Lang {
 
+    /** 解析失败告警的去重上限，避免同一条错误文案反复刷控制台。 */
+    private static final int MAX_REPORTED_FAILURES = 32;
+
     private final MikuChat plugin;
     private volatile YamlConfiguration messages = new YamlConfiguration();
     private volatile String code = "en_US";
+    /** 已报告过的解析失败（按文案原文去重）。 */
+    private final java.util.Set<String> reportedFailures = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public Lang(MikuChat plugin) {
         this.plugin = plugin;
@@ -88,7 +93,7 @@ public final class Lang {
         for (int i = 0; i + 1 < placeholders.length; i += 2) {
             value = value.replace("{" + placeholders[i] + "}", TextUtil.escape(placeholders[i + 1]));
         }
-        return TextUtil.parse(value);
+        return parseSafe(value);
     }
 
     /** 占位符值按 MiniMessage 原样注入。仅用于值来自配置文件的可信场景（如频道显示名）。 */
@@ -97,15 +102,32 @@ public final class Lang {
         for (int i = 0; i + 1 < placeholders.length; i += 2) {
             value = value.replace("{" + placeholders[i] + "}", placeholders[i + 1] == null ? "" : placeholders[i + 1]);
         }
-        return TextUtil.parse(value);
+        return parseSafe(value);
     }
 
     public Component get(String key, Map<String, String> placeholders) {
-        return TextUtil.parse(raw(key, placeholders));
+        return parseSafe(raw(key, placeholders));
     }
 
     /** 直接解析一段 MiniMessage 文案（用于配置中内联的格式）。 */
     public Component parse(String miniMessage) {
-        return TextUtil.parse(miniMessage);
+        return parseSafe(miniMessage);
+    }
+
+    /**
+     * 安全解析 MiniMessage：lang 文案写错（标签拼错、色值非法）时不能让命令或聊天直接抛异常。
+     * <p>
+     * 解析失败时退化为纯文本并限频告警，保证玩家至少能看到原始文案，而不是什么都收不到。
+     */
+    private Component parseSafe(String value) {
+        String text = value == null ? "" : value;
+        try {
+            return TextUtil.parse(text);
+        } catch (RuntimeException e) {
+            if (reportedFailures.size() < MAX_REPORTED_FAILURES && reportedFailures.add(text)) {
+                plugin.getLogger().warning("语言文案不是合法的 MiniMessage，已按纯文本显示: " + e.getMessage());
+            }
+            return Component.text(text);
+        }
     }
 }

@@ -8,6 +8,7 @@ generic:
   invalid-number: "<red>Invalid number: <white>{value}</white>."
   reloaded: "<green>Configuration reloaded."
   reloaded-module: "<green>Module <white>{module}</white> reloaded."
+  reload-partial: "<yellow>Module <white>{module}</white> reloaded, but some dependent modules failed to reload. Check the console."
   module-not-found: "<red>Module <white>{module}</white> not found."
   unknown-command: "<red>Unknown subcommand. Type <white>/mchat help</white>."
   cooldown-command: "<red>Too frequent. Wait <white>{seconds}s</white> before trying again."
@@ -56,6 +57,7 @@ mention:
   display-all: "<gradient:#7ad0ff:#a98bff>@everyone</gradient>"
   hover: "<gray>Click to reply to <white>{player}</white>"
   notify: "<gradient:#7ad0ff:#a98bff>You were mentioned</gradient> <dark_gray>·</dark_gray> <gray>{channel}"
+  # Kept for compatibility; has no effect. The active message is all-cooldown below.
   cooldown: "<red>Mention notifications are on cooldown."
   all-cooldown: "<red>@all is on cooldown."
   all-no-permission: "<red>You do not have permission to use @all."
@@ -75,6 +77,8 @@ display:
   empty-slot: "<dark_gray>·"
 
 private:
+  # Private message lines are defined in private.yml (formats.sender / formats.receiver / formats.spy).
+  # The sent / received / spy keys below are kept for compatibility and have no effect.
   sent: "<gray>You <dark_gray>→ <white>{target}</white><gray>: <white>{message}"
   received: "<gray>{sender} <dark_gray>→ <white>You</white><gray>: <white>{message}"
   spy: "<dark_gray>[PM] <gray>{sender} <dark_gray>→ <white>{target}</white><gray>: <white>{message}"
@@ -86,6 +90,7 @@ private:
   spy-off: "<gray>Private message spy disabled."
   usage-msg: "<gray>/msg <player> <message>"
   usage-reply: "<gray>/reply <message>"
+  too-long: "<red>The message is too long to send across servers. Please shorten it."
 
 who:
   requesting: "<gray>Querying cross-server players..."
@@ -97,5 +102,6 @@ who:
 log:
   usage: "<gray>/mchat log <player|keyword> [page]"
   header: "<gradient:#7ad0ff:#a98bff>Chat log</gradient> <dark_gray>·</dark_gray> <gray>query <white>{query}</white> <dark_gray>·</dark_gray> <gray>page <white>{page}</white>"
+  # Kept for compatibility; has no effect. /mchat log prints the raw log line as-is.
   entry: "<dark_gray>[{time}] <gray>{channel} <white>{sender}</white><dark_gray>: <gray>{message}"
   none: "<gray>No matching chat records found."

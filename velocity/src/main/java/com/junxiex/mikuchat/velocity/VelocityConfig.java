@@ -32,6 +32,8 @@ public final class VelocityConfig {
     // 加载在初始化线程完成，读取发生在各连接的事件线程，volatile 保证可见性。
     private volatile String channel = DEFAULT_CHANNEL;
     private volatile boolean debug = DEFAULT_DEBUG;
+    /** 与后端 network.yml 一致的共享密钥，用于给代理端下发的插件消息做 HMAC 签名；为空则不启用跨服。 */
+    private volatile String sharedSecret = "";
 
     public VelocityConfig(Path dataDirectory, Logger logger) {
         this.dataDirectory = dataDirectory;
@@ -49,6 +51,7 @@ public final class VelocityConfig {
             Map<String, Object> root = read(file);
             channel = text(root.get("channel"), DEFAULT_CHANNEL);
             debug = flag(root.get("debug"), DEFAULT_DEBUG);
+            sharedSecret = text(root.get("shared-secret"), "");
         } catch (Throwable t) {
             logger.warn("读取 Velocity 端配置失败，沿用当前配置：{}", t.getMessage());
         }
@@ -61,6 +64,11 @@ public final class VelocityConfig {
 
     public boolean debug() {
         return debug;
+    }
+
+    /** 跨服消息签名密钥；为空表示服主尚未配置，跨服功能不可用。 */
+    public String sharedSecret() {
+        return sharedSecret;
     }
 
     @SuppressWarnings("unchecked")

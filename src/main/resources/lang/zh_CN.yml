@@ -8,6 +8,7 @@ generic:
   invalid-number: "<red>无效的数字：<white>{value}</white>。"
   reloaded: "<green>配置已重载。"
   reloaded-module: "<green>模块 <white>{module}</white> 已重载。"
+  reload-partial: "<yellow>模块 <white>{module}</white> 已重载，但部分依赖模块重载失败，请查看控制台。"
   module-not-found: "<red>找不到模块 <white>{module}</white>。"
   unknown-command: "<red>未知子命令，输入 <white>/mchat help</white> 查看帮助。"
   cooldown-command: "<red>操作过于频繁，请等待 <white>{seconds}s</white> 后再试。"
@@ -56,6 +57,7 @@ mention:
   display-all: "<gradient:#7ad0ff:#a98bff>@全体</gradient>"
   hover: "<gray>点击回复 <white>{player}</white>"
   notify: "<gradient:#7ad0ff:#a98bff>有人@了你</gradient> <dark_gray>·</dark_gray> <gray>{channel} 频道"
+  # 该键保留兼容、修改不生效：@ 提醒实际使用的是下面的 all-cooldown（全服 @all 冷却文案）。
   cooldown: "<red>@ 提醒太频繁，请稍后再试。"
   all-cooldown: "<red>@all 冷却中，请稍后再试。"
   all-no-permission: "<red>你没有权限使用 @all。"
@@ -75,6 +77,8 @@ display:
   empty-slot: "<dark_gray>·"
 
 private:
+  # 私聊行格式以 private.yml 的 formats.sender / formats.receiver / formats.spy 为准；
+  # 下面 sent / received / spy 三个键保留兼容、修改不生效。
   sent: "<gray>你 <dark_gray>→ <white>{target}</white><gray>：<white>{message}"
   received: "<gray>{sender} <dark_gray>→ <white>你</white><gray>：<white>{message}"
   spy: "<dark_gray>[私聊] <gray>{sender} <dark_gray>→ <white>{target}</white><gray>：<white>{message}"
@@ -86,6 +90,7 @@ private:
   spy-off: "<gray>已关闭私聊监听。"
   usage-msg: "<gray>/msg <玩家> <内容>"
   usage-reply: "<gray>/reply <内容>"
+  too-long: "<red>消息内容过长，无法跨服发送，请缩短后重试。"
 
 who:
   requesting: "<gray>正在查询跨服在线玩家…"
@@ -97,5 +102,6 @@ who:
 log:
   usage: "<gray>/mchat log <玩家|关键词> [页码]"
   header: "<gradient:#7ad0ff:#a98bff>聊天记录</gradient> <dark_gray>·</dark_gray> <gray>关键词 <white>{query}</white> <dark_gray>·</dark_gray> <gray>第 <white>{page}</white> 页"
+  # 该键保留兼容、修改不生效：/mchat log 直接输出留档文件中的原始行。
   entry: "<dark_gray>[{time}] <gray>{channel} <white>{sender}</white><dark_gray>: <gray>{message}"
   none: "<gray>没有找到匹配的聊天记录。"

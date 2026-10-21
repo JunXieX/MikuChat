@@ -113,7 +113,15 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         Set<Audience> viewers = new HashSet<>(event.viewers());
         String raw = TextUtil.plain(event.message());
         event.setCancelled(true);
-        plugin.scheduler().atEntity(sender, () -> process(sender, raw, viewers));
+        plugin.scheduler().atEntity(sender, () -> {
+            try {
+                process(sender, raw, viewers);
+            } catch (Throwable t) {
+                // 消息已被取消：任何未预期的异常都会让这条消息静默消失，至少留下可排查的日志
+                plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                        "处理聊天消息时发生未预期异常（该条消息已丢弃）", t);
+            }
+        });
     }
 
     private void process(Player sender, String raw, Set<Audience> viewers) {
@@ -204,7 +212,9 @@ public final class ChatPipelineModule implements ChatModule, Listener {
 
         NetworkService network = plugin.services().find(NetworkService.class).orElse(null);
         boolean crossServer = channel.scope() == ChannelScope.NETWORK;
-        boolean networkReady = network != null && network.available();
+        // 用 connected() 而不是 available()：通道注册成功不代表代理端插件存在，
+        // 单机服上 available() 恒为 true，会让 network-unavailable-action: DROP 永不生效。
+        boolean networkReady = network != null && network.connected();
         // 是否投递必须先于正文组装判定：组装会触发 [item]/@ 等处理器，这些处理器会消费冷却
         // 并向玩家发送「冷却中/无物品」等提示。若先组装再因频道不可用而丢弃，玩家既损失了冷却
         // 又收到与真实发送无关的提示。
@@ -215,8 +225,29 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         }
 
         MessageComposer.Composed composed = composer.compose(sender, channel, raw);
+        // MiniMessage 标签可以插在词中间绕过原文过滤（"傻<red>逼" 归一化后是 "傻red逼"），
+        // 因此再对渲染后的可见文本做一次只拦截不替换的校验；命中说明发送者试图用标签拆词。
+        // 只有输入里真的带标签/色码时才可能出现「标签拆词」：普通消息的可见文本与过滤后的原文一致，
+        // 第一次过滤已经覆盖，没必要每条消息都再跑一遍归一化与自动机扫描。
+        boolean mayHideMarkup = raw.indexOf('<') >= 0 || raw.indexOf('§') >= 0;
+        if (mayHideMarkup && filter != null
+                && filter.blockedByVisibleText(sender, channel, TextUtil.plain(composed.body()))) {
+            sender.sendMessage(plugin.lang().get("filter.blocked"));
+            return;
+        }
         FormatService format = plugin.services().find(FormatService.class).orElse(null);
-        Component line = format == null ? composed.body() : format.render(sender, channel, composed.body());
+        Component line;
+        if (format == null) {
+            line = composed.body();
+        } else {
+            try {
+                line = format.render(sender, channel, composed.body());
+            } catch (RuntimeException e) {
+                // 配置里的格式模板写错不应让整条聊天消失，退化为只发正文
+                plugin.debug("聊天格式渲染失败，已退化为正文: " + e);
+                line = composed.body();
+            }
+        }
 
         deliverLocal(viewers, channel, line);
 

@@ -14,7 +14,16 @@ import java.util.function.Consumer;
  */
 public interface NetworkService {
 
+    /** 插件消息通道是否已注册（不代表代理端插件一定在线）。 */
     boolean available();
+
+    /**
+     * 是否已与代理端完成过至少一次通信。
+     * <p>
+     * 通道注册在任意 Paper 服务端都会成功，单机服也会有 {@link #available()} 为 true，
+     * 因此「跨服是否真正可用」必须另以此判定，供降级策略与 /mchat info 使用。
+     */
+    boolean connected();
 
     String serverId();
 

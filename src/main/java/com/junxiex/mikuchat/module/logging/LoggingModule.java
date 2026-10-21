@@ -48,6 +48,11 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         applyFormats();
         plugin.services().register(ChatLogService.class, this);
         plugin.services().register(LoggingModule.class, this);
+        purgeExpiredLogs();
+    }
+
+    /** 按当前 retention-days 异步清理过期留档；enable() 与 reload() 共用，兑现配置里「启动/重载时清理」的承诺。 */
+    private void purgeExpiredLogs() {
         int retentionDays = config.config().getInt("retention-days", 30);
         plugin.scheduler().async(() -> com.junxiex.mikuchat.core.util.LogRetention.purge(
                 directory(), retentionDays, fileFormat, plugin.getLogger(), "聊天记录"));
@@ -78,6 +83,8 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         plugin.configManager().reload("chatlog.yml");
         // 必须一并重解析格式：否则改完 chatlog.yml 的时间/日期格式要重启才生效
         applyFormats();
+        // chatlog.yml 说明承诺「超期文件会在启动/重载时自动删除」，这里与 enable() 保持一致
+        purgeExpiredLogs();
     }
 
     @Override

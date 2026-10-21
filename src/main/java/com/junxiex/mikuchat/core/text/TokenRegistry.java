@@ -58,7 +58,16 @@ public final class TokenRegistry {
             }
             String token = matcher.group();
             ChatTokenHandler handler = handlerFor(current.handlers(), token);
-            Component rendered = handler == null ? null : handler.render(context, token);
+            Component rendered = null;
+            if (handler != null) {
+                try {
+                    rendered = handler.render(context, token);
+                } catch (RuntimeException ignored) {
+                    // 单个标记处理器异常不能让整条消息丢失：回退为把该标记按普通文本渲染。
+                    // TokenRegistry 不持有 plugin 引用（也不改构造签名），因此不在此处记录日志；
+                    // 处理器内部应自行记录失败原因（例如 DisplayManager 的 debug 日志）。
+                }
+            }
             result = result.append(rendered != null ? rendered : context.textRenderer().apply(token));
             last = matcher.end();
         }
