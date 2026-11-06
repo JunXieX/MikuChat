@@ -25,6 +25,7 @@ channel:
   trigger-empty: "<red>Nothing after the <white>{symbol}</white> symbol."
   no-permission: "<red>You do not have permission to use channel <white>{channel}</white>."
   disabled: "<red>Channel <white>{channel}</white> is unavailable."
+  cross-too-long: "<red>The message is too long and was only sent to this server."
   already: "<gray>You are already in channel <white>{channel}</white>."
   list-header: "<gray>Available channels:"
   list-line: "<hover:show_text:'{description}'><click:run_command:'/mchat channel {id}'><white>{id}</white></click></hover> <dark_gray>·</dark_gray> <gray>{display}"

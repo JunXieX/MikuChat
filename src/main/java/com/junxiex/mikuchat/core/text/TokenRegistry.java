@@ -2,8 +2,8 @@ package com.junxiex.mikuchat.core.text;
 
 import net.kyori.adventure.text.Component;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -12,29 +12,18 @@ import java.util.regex.Pattern;
  */
 public final class TokenRegistry {
 
-    private final List<ChatTokenHandler> handlers = new CopyOnWriteArrayList<>();
-    /**
-     * 组合正则与处理器快照。二者必须作为同一个不可变对象整体发布：
-     * 若拆成两个字段分别写入，并发读可能看到「已重建完成」却拿到尚未写入的正则，
-     * 导致该条消息的所有标记（[item]、@ 等）都不渲染。
-     */
-    private volatile Snapshot snapshot;
+    private final List<ChatTokenHandler> handlers = new ArrayList<>();
+    /** 组合正则与处理器快照；注册/注销时整体重建，聊天线程只做一次 volatile 读。 */
+    private volatile Snapshot snapshot = new Snapshot(null, List.of());
 
-    public void register(ChatTokenHandler handler) {
-        // 与 snapshotOrRebuild() 共用同一把锁：否则构建线程可能已读取旧的 handlers
-        // 列表、在锁外被挂起，随后这里完成修改并置空快照，构建线程再把旧快照写回，
-        // 使新注册的处理器直到下一次注册/注销才生效。
-        synchronized (this) {
-            handlers.add(handler);
-            snapshot = null;
-        }
+    public synchronized void register(ChatTokenHandler handler) {
+        handlers.add(handler);
+        snapshot = buildSnapshot();
     }
 
-    public void unregister(ChatTokenHandler handler) {
-        synchronized (this) {
-            handlers.remove(handler);
-            snapshot = null;
-        }
+    public synchronized void unregister(ChatTokenHandler handler) {
+        handlers.remove(handler);
+        snapshot = buildSnapshot();
     }
 
     /**
@@ -42,7 +31,7 @@ public final class TokenRegistry {
      * 标记组件由对应处理器渲染，二者互不二次解析。
      */
     public Component build(String text, TokenContext context) {
-        Snapshot current = snapshotOrRebuild();
+        Snapshot current = snapshot;
         Pattern pattern = current.combined();
         if (pattern == null || text == null || text.isEmpty()) {
             return context.textRenderer().apply(text == null ? "" : text);
@@ -87,23 +76,6 @@ public final class TokenRegistry {
             }
         }
         return null;
-    }
-
-    /** 组合快照只构建一次；没有任何处理器时也缓存空快照，避免每条消息重复进入同步块。 */
-    private Snapshot snapshotOrRebuild() {
-        Snapshot current = snapshot;
-        if (current != null) {
-            return current;
-        }
-        synchronized (this) {
-            Snapshot rebuilt = snapshot;
-            if (rebuilt != null) {
-                return rebuilt;
-            }
-            Snapshot built = buildSnapshot();
-            snapshot = built;
-            return built;
-        }
     }
 
     private Snapshot buildSnapshot() {

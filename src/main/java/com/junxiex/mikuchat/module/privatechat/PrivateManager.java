@@ -36,8 +36,6 @@ public final class PrivateManager {
     private static final int MAX_REMOTE_LINE_BYTES = 16384;
     /** 两行组件合计字节预算：插件消息硬上限 32767 字节，留出信封与 JSON 转义余量。 */
     private static final int MAX_PRIVATE_PACKET_BYTES = 24000;
-    /** 格式模板解析失败告警的去重条目上限：配置写错时只提示少量，避免每条消息都刷日志。 */
-    private static final int MAX_FORMAT_WARNINGS = 16;
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -46,6 +44,8 @@ public final class PrivateManager {
 
     private final Map<UUID, String> replyTargets = new ConcurrentHashMap<>();
     private final Map<String, PendingDelivery> pending = new ConcurrentHashMap<>();
+    /** 最近一次跨服私聊 id：迟到的 ACK 不能覆盖之后本地 /msg 或新跨服私聊写入的回复目标。 */
+    private final Map<UUID, String> lastOutbound = new ConcurrentHashMap<>();
     private final Map<String, Boolean> warnedFormatErrors = new ConcurrentHashMap<>();
 
     private final BiConsumer<String, String> remoteHandler = (source, json) -> onRemotePrivate(json);
@@ -163,6 +163,8 @@ public final class PrivateManager {
 
         Player localTarget = findLocal(targetName);
         if (localTarget != null) {
+            // 本地投递立即生效，作废之前未到达的跨服 ACK
+            lastOutbound.remove(sender.getUniqueId());
             replyTargets.put(sender.getUniqueId(), localTarget.getName());
             // 接收方同样要能 /reply 回来：replyTargets 是两个方向的会话指针，
             // 只写发送方会导致「A 发给 B 后，B 用 /reply 提示没有回复对象」。
@@ -221,12 +223,14 @@ public final class PrivateManager {
                 // 放弃监听行副本，优先保证私聊本体能够送达
                 spyJson = null;
             }
-            pending.put(id, new PendingDelivery(sender, targetName, senderLine, finalContent));
+            pending.put(id, new PendingDelivery(sender, targetName, senderLine));
+            lastOutbound.put(sender.getUniqueId(), id);
             network.publish(TYPE_PRIVATE, new PrivatePacket(id, sender.getUniqueId(), sender.getName(),
                     targetName, owners.get(0), receiverJson, spyJson,
-                    finalContent, composed.mentions(), System.currentTimeMillis()));
+                    finalContent, composed.mentions()));
             plugin.scheduler().asyncLater(() -> {
                 PendingDelivery delivery = pending.remove(id);
+                lastOutbound.remove(sender.getUniqueId(), id);
                 if (delivery != null && delivery.sender().isOnline()) {
                     plugin.scheduler().atEntity(delivery.sender(), () ->
                             delivery.sender().sendMessage(plugin.lang().get("private.target-offline",
@@ -331,7 +335,11 @@ public final class PrivateManager {
         if (delivery == null) {
             return;
         }
-        replyTargets.put(delivery.sender().getUniqueId(), delivery.targetName());
+        // 只有这次跨服私聊仍是该玩家最后一次操作时才更新回复目标；
+        // 若之后又发过本地 /msg 或更新的跨服私聊，ACK 不能把指针退回旧对象；但回显必须照常发送。
+        if (lastOutbound.remove(delivery.sender().getUniqueId(), id)) {
+            replyTargets.put(delivery.sender().getUniqueId(), delivery.targetName());
+        }
         if (delivery.sender().isOnline()) {
             plugin.scheduler().atEntity(delivery.sender(), () -> delivery.sender().sendMessage(delivery.senderLine()));
         }
@@ -374,7 +382,7 @@ public final class PrivateManager {
                 .replace("{time}", now.format(logTimeFormat))
                 .replace("{sender}", senderName)
                 .replace("{target}", targetName)
-                .replace("{message}", message);
+                .replace("{message}", TextUtil.oneLine(message));
         Path path = plugin.getDataFolder().toPath()
                 .resolve("data/private-logs/" + now.format(dateFormat) + ".log");
         plugin.fileWriter().append(path, line);
@@ -402,9 +410,6 @@ public final class PrivateManager {
 
     /** 格式模板解析失败只告警一次，并用有限容量的 Map 控制去重条目，防止异常配置放大内存。 */
     private void warnFormatOnce(String template, RuntimeException e) {
-        if (warnedFormatErrors.size() >= MAX_FORMAT_WARNINGS) {
-            return;
-        }
         String key = String.valueOf(template);
         if (warnedFormatErrors.putIfAbsent(key, Boolean.TRUE) == null) {
             plugin.getLogger().warning("私聊消息格式模板解析失败，已回退为只显示正文: " + e.getMessage());
@@ -446,6 +451,7 @@ public final class PrivateManager {
     public void forget(UUID uuid) {
         // 回复目标仅保留会话期，玩家数据由 UserDataStore 统一在退出时释放
         replyTargets.remove(uuid);
+        lastOutbound.remove(uuid);
     }
 
     /**
@@ -458,7 +464,7 @@ public final class PrivateManager {
      */
     public record PrivatePacket(String id, UUID senderId, String senderName, String targetName,
                                 String targetServer, String receiverLine, String spyLine, String rawText,
-                                List<String> mentions, long timestamp) {
+                                List<String> mentions) {
 
         /** 兼容旧版本节点发来的、不带 mentions 字段的包（Gson 会把缺失字段置为 null）。 */
         public List<String> safeMentions() {
@@ -478,6 +484,6 @@ public final class PrivateManager {
     private record AckPacket(String id) {
     }
 
-    private record PendingDelivery(Player sender, String targetName, Component senderLine, String rawText) {
+    private record PendingDelivery(Player sender, String targetName, Component senderLine) {
     }
 }

@@ -25,6 +25,7 @@ channel:
   trigger-empty: "<red>符号 <white>{symbol}</white> 后面没有内容。"
   no-permission: "<red>你没有权限使用频道 <white>{channel}</white>。"
   disabled: "<red>频道 <white>{channel}</white> 当前不可用。"
+  cross-too-long: "<red>消息内容过长，已仅在本服发送。"
   already: "<gray>你已经在频道 <white>{channel}</white>。"
   list-header: "<gray>可用频道："
   list-line: "<hover:show_text:'{description}'><click:run_command:'/mchat channel {id}'><white>{id}</white></click></hover> <dark_gray>·</dark_gray> <gray>{display}"

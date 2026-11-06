@@ -24,6 +24,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
@@ -139,7 +140,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
                     continue;
                 }
                 ChannelView forced = channelService.byId(entry.getValue());
-                if (forced == null || !forced.valid()) {
+                if (forced == null) {
                     continue;
                 }
                 if (!channelService.mayUse(sender, forced)) {
@@ -157,14 +158,13 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             }
         }
         raw = content;
-        if (channel == null || !channel.valid()) {
+        if (channel == null) {
             sender.sendMessage(plugin.lang().get("channel.not-found", "channel", plugin.defaultChannelId()));
             return;
         }
         // 发送者自身也必须能用该频道：投递阶段会按频道权限过滤接收者，
         // 若发送者本来就没权限（例如默认频道被设了权限），消息会被静默丢弃且没有任何提示。
-        ChannelService channelCheck = plugin.services().find(ChannelService.class).orElse(null);
-        if (channelCheck != null && !channelCheck.mayUse(sender, channel)) {
+        if (!channelService.mayUse(sender, channel)) {
             sender.sendMessage(plugin.lang().get("channel.no-permission", "channel", channel.id()));
             return;
         }
@@ -181,17 +181,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             }
         }
 
-        AntiSpamService antiSpam = plugin.services().find(AntiSpamService.class).orElse(null);
-        if (antiSpam != null) {
-            var result = antiSpam.check(sender, channel, raw);
-            if (result.blocked()) {
-                if (!result.silent()) {
-                    sender.sendMessage(antiSpam.feedback(plugin.lang(), result));
-                }
-                return;
-            }
-        }
-
+        String originalText = raw;
         FilterService filter = plugin.services().find(FilterService.class).orElse(null);
         if (filter != null) {
             var result = filter.apply(sender, channel, raw);
@@ -205,6 +195,19 @@ public final class ChatPipelineModule implements ChatModule, Listener {
                 if (result.notified()) {
                     sender.sendMessage(plugin.lang().get("filter.replaced"));
                 }
+            }
+        }
+
+        // 过滤之后再判刷屏：被拦截的消息不应消耗冷却/令牌，否则玩家改掉内容重发会被误报「发送太快」
+        AntiSpamService antiSpam = plugin.services().find(AntiSpamService.class).orElse(null);
+        if (antiSpam != null) {
+            // 用过滤前原文判重：替换模式会把词遮成 "****"，用掩码文本会把正常消息误判为刷屏
+            var result = antiSpam.check(sender, channel, originalText);
+            if (result.blocked()) {
+                if (!result.silent()) {
+                    sender.sendMessage(antiSpam.feedback(plugin.lang(), result));
+                }
+                return;
             }
         }
 
@@ -236,41 +239,36 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             return;
         }
         FormatService format = plugin.services().find(FormatService.class).orElse(null);
-        Component line;
-        if (format == null) {
-            line = composed.body();
-        } else {
-            try {
-                line = format.render(sender, channel, composed.body());
-            } catch (RuntimeException e) {
-                // 配置里的格式模板写错不应让整条聊天消失，退化为只发正文
-                plugin.debug("聊天格式渲染失败，已退化为正文: " + e);
-                line = composed.body();
+        Component line = format == null ? composed.body() : format.render(sender, channel, composed.body());
+
+        deliverLocal(channelService, viewers, channel, line);
+
+        if (crossServer && networkReady) {
+            String lineJson = TextUtil.toJson(line);
+            // 接收端按字符数限制组件体积；超限消息发送出去只会被丢弃，还会在短连接上放大带宽
+            if (lineJson.length() > MAX_REMOTE_LINE_LENGTH
+                    || lineJson.getBytes(StandardCharsets.UTF_8).length > 24000) {
+                sender.sendMessage(plugin.lang().get("channel.cross-too-long"));
+            } else {
+                network.publish(TYPE_CHAT, new NetworkService.ChatOutbound(
+                        sender.getUniqueId(), sender.getName(), network.serverId(), channel.id(),
+                        raw, lineJson, composed.mentions(), System.currentTimeMillis()));
             }
         }
 
-        deliverLocal(viewers, channel, line);
-
-        if (crossServer && networkReady) {
-            network.publish(TYPE_CHAT, new NetworkService.ChatOutbound(
-                    sender.getUniqueId(), sender.getName(), network.serverId(), channel.id(),
-                    raw, TextUtil.toJson(line), composed.mentions(),
-                    System.currentTimeMillis()));
-        }
-
         notifyMentions(sender.getUniqueId(), composed.mentions(), channel.displayName());
-        record(channel, sender.getName(), raw, false);
+        record(channel, sender.getName(), TextUtil.oneLine(raw), false);
     }
 
     /**
      * 本服投递。频道配了 permission 时只发给有权限的玩家：否则「限权频道」在本服照常
      * 广播给所有人，而同样的消息从别的服务器发来却会按权限过滤，两侧策略不一致。
      */
-    private void deliverLocal(Collection<Audience> viewers, ChannelView channel, Component line) {
-        ChannelService channelService = plugin.services().find(ChannelService.class).orElse(null);
+    private void deliverLocal(ChannelService channelService, Collection<Audience> viewers,
+                              ChannelView channel, Component line) {
         for (Audience audience : viewers) {
             if (audience instanceof Player player) {
-                if (channelService != null && !channelService.mayUse(player, channel)) {
+                if (!channelService.mayUse(player, channel)) {
                     continue;
                 }
                 plugin.scheduler().atEntity(player, () -> player.sendMessage(line));
@@ -322,7 +320,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         // 都能把消息推到本服所有玩家，包括本服设为 SERVER 作用域、带权限限制的频道。
         ChannelService channelService = plugin.services().find(ChannelService.class).orElse(null);
         ChannelView channel = channelService == null ? null : channelService.byId(packet.channelId());
-        if (channel == null || !channel.valid() || channel.scope() != ChannelScope.NETWORK) {
+        if (channel == null || channel.scope() != ChannelScope.NETWORK) {
             plugin.debug("丢弃跨服聊天：本服不存在跨服频道 " + packet.channelId());
             return;
         }
@@ -352,6 +350,6 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         notifyMentions(packet.senderId(), packet.mentions() == null ? List.of() : packet.mentions(),
                 channel.displayName());
         record(channel, packet.senderName() == null ? "" : packet.senderName(),
-                packet.rawText() == null ? "" : packet.rawText(), true);
+                TextUtil.oneLine(packet.rawText()), true);
     }
 }

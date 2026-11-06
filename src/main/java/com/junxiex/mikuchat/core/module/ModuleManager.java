@@ -3,6 +3,7 @@ package com.junxiex.mikuchat.core.module;
 import com.junxiex.mikuchat.MikuChat;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,8 +16,7 @@ public final class ModuleManager {
 
     private final MikuChat plugin;
     private final Map<String, ChatModule> modules = new LinkedHashMap<>();
-    // Folia 下不同区域线程可能同时触发重载，这里必须是并发集合
-    private final Set<String> enabled = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Set<String> enabled = new HashSet<>();
 
     public ModuleManager(MikuChat plugin) {
         this.plugin = plugin;
@@ -39,24 +39,6 @@ public final class ModuleManager {
         for (int i = list.size() - 1; i >= 0; i--) {
             disable(list.get(i));
         }
-    }
-
-    public boolean enable(String id) {
-        ChatModule module = modules.get(id);
-        if (module == null) {
-            return false;
-        }
-        enable(module);
-        return enabled.contains(id);
-    }
-
-    public boolean disable(String id) {
-        ChatModule module = modules.get(id);
-        if (module == null) {
-            return false;
-        }
-        disable(module);
-        return true;
     }
 
     public boolean reload(String id) {

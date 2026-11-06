@@ -58,9 +58,6 @@ public final class AhoCorasick {
                     fail = fail.fail;
                 }
                 child.fail = fail == null ? root : fail.next.get(ch);
-                if (child.fail == child) {
-                    child.fail = root;
-                }
                 child.output.addAll(child.fail.output);
                 queue.add(child);
             }

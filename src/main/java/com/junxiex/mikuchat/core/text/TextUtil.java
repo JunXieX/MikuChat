@@ -23,7 +23,7 @@ public final class TextUtil {
     private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
     private static final LegacyComponentSerializer LEGACY_AMPERSAND = LegacyComponentSerializer.legacyAmpersand();
     private static final LegacyComponentSerializer LEGACY_SECTION = LegacyComponentSerializer.legacySection();
-    /** 递归净化允许的最大组件深度：恶意构造的超深组件树会让递归遍历栈溢出，超限子树直接丢弃。 */
+    /** 跨服组件 JSON 只有 16KB，正常深度远低于此；超过说明对端构造了异常结构，丢弃该子树。 */
     private static final int MAX_STRIP_DEPTH = 128;
 
     private TextUtil() {
@@ -77,9 +77,7 @@ public final class TextUtil {
      * 用于所有来自跨服信任边界的组件：交互事件由发送端按它自己的权限策略放行，
      * 接收端若不剥离，等于让对端决定本服玩家能点到什么（如点击执行指令）。
      * <p>
-     * 组件树并不只有 children：translate 的 with 参数、selector / NBT 的 separator
-     * 都是能承载组件的独立子树（均可经 Gson 从对端传过来），必须一并递归处理，
-     * 否则交互事件只要换个位置藏匿就能绕过净化。
+     * translate 的参数不是 children，<lang:...> 可以很容易把组件藏进参数里，必须一并递归。
      */
     public static Component stripInteractive(Component component) {
         return stripInteractive(component, 0);
@@ -90,23 +88,18 @@ public final class TextUtil {
             return Component.empty();
         }
         if (depth >= MAX_STRIP_DEPTH) {
-            // 超限：直接丢弃该子树，避免恶意深层结构在递归中栈溢出
             return Component.empty();
         }
-        // style(...) 只替换样式，保留该组件自身的文本内容；先净化样式再重建 children / 参数，
-        // 避免重建时把未净化的旧事件带回来
-        Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
         int next = depth + 1;
+        Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
         if (result instanceof TranslatableComponent translatable) {
             List<TranslationArgument> arguments = translatable.arguments();
             if (!arguments.isEmpty()) {
                 List<TranslationArgument> cleaned = new ArrayList<>(arguments.size());
                 for (TranslationArgument argument : arguments) {
                     if (argument.value() instanceof Component argumentComponent) {
-                        // 组件参数必须递归净化后再包回翻译参数
                         cleaned.add(TranslationArgument.component(stripInteractive(argumentComponent, next)));
                     } else {
-                        // 数字 / 布尔参数原样保留：转成文本组件会破坏翻译占位符的类型
                         cleaned.add(argument);
                     }
                 }
@@ -128,6 +121,14 @@ public final class TextUtil {
             return result;
         }
         return result.children(children.stream().map(child -> stripInteractive(child, next)).toList());
+    }
+
+    /** 单行化：日志按行存储，玩家内容里的 CR/LF 必须去掉，避免伪造整行记录。 */
+    public static String oneLine(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        return text.replace("\r\n", " ").replace('\r', ' ').replace('\n', ' ');
     }
 
     /** 按字符数截断，并避免把代理对（emoji）从中间截断产生非法字符。 */

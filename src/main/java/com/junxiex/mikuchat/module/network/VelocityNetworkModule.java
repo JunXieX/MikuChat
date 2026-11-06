@@ -22,13 +22,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -63,44 +61,16 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
     /** 跨服在线查询应答：{@code {"token","servers":{服务器: [玩家名]}}}。 */
     public static final String TYPE_WHO_RES = "WHO_RES";
 
-    /** 去重窗口：代理端可能通过多条连接重复投递同一条消息。 */
-    private static final int SEEN_CAPACITY = 512;
-
-    /**
-     * 代理端自身发出的消息所使用的来源标识，与 Velocity 端 {@code ProxyBridge} 保持一字不差。
-     * <p>
-     * 代理端的 {@code WHO_RES} / {@code STATE_SYNC} 都由它发出，因此白名单校验必须显式放行它，
-     * 否则一旦服主按 network.yml 的建议填了 {@code trusted-servers}，跨服在线查询与禁言同步
-     * 会被本插件自己丢掉，表现为「查询一直无响应、禁言不跨服」。
-     */
-    private static final String PROXY_SOURCE = "__proxy__";
+    /** 插件消息硬上限 32767 字节，超过则不发送，避免队列被无法投递的消息永久阻塞。 */
+    private static final int MAX_MESSAGE_BYTES = 30000;
 
     private final MikuChat plugin;
     private final ConfigFile config;
     private final Gson gson = new Gson();
     private final Map<String, List<BiConsumer<String, String>>> handlers = new ConcurrentHashMap<>();
     private final Map<String, PendingPresence> pendingPresence = new ConcurrentHashMap<>();
-    /** 已处理消息 id 的有界 LRU，用于丢弃重复投递。 */
-    private final Map<String, Boolean> seen = Collections.synchronizedMap(
-            new LinkedHashMap<>(64, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
-                    return size() > SEEN_CAPACITY;
-                }
-            });
     /** 本服无玩家在线时暂存的待发消息，玩家接入后按序补发。 */
     private final Deque<byte[]> outbound = new ArrayDeque<>();
-    /**
-     * 发送失败的状态类消息：按 uuid 合并只保留最新一条，玩家接入时补发。
-     * 状态类消息不能像聊天那样原样重放（旧 KV_SET 会覆盖后来的解除），
-     * 因此这里以「同一 uuid 只保留最后一次变更」的方式重试。
-     */
-    private final Map<String, PendingState> pendingState = new LinkedHashMap<>();
-    /**
-     * 可信来源服务器白名单（{@code network.yml: trusted-servers}）。为空表示不校验（兼容旧配置）；
-     * 一旦配置，只接受 {@code src} 命中的消息，防止后端脱离代理运行时被伪造的插件消息注入。
-     */
-    private final Set<String> trustedServers = ConcurrentHashMap.newKeySet();
 
     private volatile String channel = "mikuchat:proxy";
     /** 与代理端共享的 HMAC 密钥；为空表示未配置，跨服功能不启用（否则客户端可伪造插件消息）。 */
@@ -136,23 +106,25 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         // 队列容量必须为正：<=0 会让下面的裁剪循环永远成立（负数时直接死循环），
         // 而 0 会造成「每条都先被清空再入队」，等于队列失效。
         this.queueCapacity = Math.max(1, config.config().getInt("outbound-queue-capacity", 1024));
-        this.trustedServers.clear();
-        this.trustedServers.addAll(config.config().getStringList("trusted-servers"));
+        if (config.config().isSet("trusted-servers")) {
+            plugin.getLogger().warning("network.yml 的 trusted-servers 已在 1.8 移除并被忽略；"
+                    + "跨服消息由 shared-secret 签名保证来源，请删除该配置项。");
+        }
 
         this.sharedSecret = config.config().getString("shared-secret", "").trim();
         this.proxyConnected = false;
         this.resyncNeeded = true;
+
+        if (!config.config().getBoolean("enabled", true)) {
+            plugin.getLogger().info("跨服功能已在配置中关闭，仅启用本服聊天。");
+            available = false;
+            return;
+        }
         if (sharedSecret.isEmpty()) {
             // 没有共享密钥就无法证明消息来自代理端：客户端同样能向该通道发送插件消息，
             // 伪造 STATE_SYNC / MUTE_UPDATE 即可清空禁言或冒充他人。宁可不启用跨服。
             plugin.getLogger().severe("跨服功能已禁用：network.yml 的 shared-secret 为空。"
                     + "请在后端 network.yml 与 Velocity 端 plugins/MikuChat/config.yml 配置相同的 shared-secret 后重载。");
-            available = false;
-            return;
-        }
-
-        if (!config.config().getBoolean("enabled", true)) {
-            plugin.getLogger().info("跨服功能已在配置中关闭，仅启用本服聊天。");
             available = false;
             return;
         }
@@ -349,30 +321,6 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             } else if (!queued.isEmpty()) {
                 plugin.debug("已补发 " + queued.size() + " 条暂存的跨服消息。");
             }
-            // 补发合并后的状态类消息（每个 uuid 只保留最后一次变更）
-            Map<String, PendingState> states;
-            synchronized (pendingState) {
-                states = pendingState.isEmpty() ? Map.of() : new LinkedHashMap<>(pendingState);
-            }
-            for (Map.Entry<String, PendingState> entry : states.entrySet()) {
-                PendingState pending = entry.getValue();
-                synchronized (pendingState) {
-                    // 发送前再确认一次：若期间已被更新的变更替换，就不再把旧字节发出去
-                    if (pendingState.get(entry.getKey()) != pending) {
-                        continue;
-                    }
-                }
-                try {
-                    player.sendPluginMessage(plugin, channel, pending.data());
-                    synchronized (pendingState) {
-                        // 只移除这一条快照：若期间被更新的变更替换，保留新值
-                        pendingState.remove(entry.getKey(), pending);
-                    }
-                } catch (Throwable t) {
-                    failure = t;
-                    break;
-                }
-            }
             // 只在「可能漏收实时消息」时补一次全量同步：启动后首名玩家接入、或本服曾无人在线、
             // 或补发失败。避免每次 join 都做一次全量 STATE_SYNC 与本地文件整写。
             if (resyncNeeded || failure != null) {
@@ -417,27 +365,9 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         try {
             JsonObject object = JsonParser.parseString(verified).getAsJsonObject();
             String type = object.get("type").getAsString();
-            String source = object.get("src").getAsString();
+            String source = object.has("src") ? object.get("src").getAsString() : "";
             // 能通过共享密钥校验的消息只可能由代理端签发，可认为跨服已实际连通
             proxyConnected = true;
-            // 代理已排除发送方，这里是双保险，避免自己处理自己发出的消息
-            if (source.equals(serverId())) {
-                return;
-            }
-            // 配置了白名单时，只信任名单内的来源服务器，拒绝伪造/未知来源的插件消息。
-            // 代理端自身的应答（WHO_RES / STATE_SYNC）来源固定为 PROXY_SOURCE，必须放行，
-            // 否则填了 trusted-servers 反而会让跨服查询与禁言同步全部失效。
-            // 只对代理端确实自产的这两种类型放行，避免其它类型借 PROXY_SOURCE 绕过白名单。
-            boolean fromProxy = PROXY_SOURCE.equals(source)
-                    && (TYPE_WHO_RES.equals(type) || TYPE_STATE_SYNC.equals(type));
-            if (!trustedServers.isEmpty() && !fromProxy && !trustedServers.contains(source)) {
-                plugin.debug("已忽略来自非受信服务器 " + source + " 的跨服消息 " + type);
-                return;
-            }
-            String id = object.has("id") ? object.get("id").getAsString() : "";
-            if (!id.isEmpty() && isDuplicate(id)) {
-                return;
-            }
             String data = object.has("data") ? object.get("data").toString() : "{}";
             if (TYPE_WHO_RES.equals(type)) {
                 handlePresence(data);
@@ -456,12 +386,6 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
             }
         } catch (Throwable t) {
             plugin.debug("忽略无法解析的跨服消息: " + t.getMessage());
-        }
-    }
-
-    private boolean isDuplicate(String id) {
-        synchronized (seen) {
-            return seen.put(id, Boolean.TRUE) != null;
         }
     }
 
@@ -590,10 +514,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         JsonObject object = new JsonObject();
         object.addProperty("type", type);
         object.addProperty("src", serverId());
-        object.addProperty("id", UUID.randomUUID().toString());
         object.addProperty("ts", System.currentTimeMillis());
-        // 协议版本：代理端据此决定是否分页下发（旧后端不带该字段 → 保持旧格式）
-        object.addProperty("proto", 2);
         object.add("data", gson.toJsonTree(payload));
         return object.toString();
     }
@@ -608,113 +529,35 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
      */
     private void send(String json, boolean queueIfOffline) {
         byte[] data = json.getBytes(StandardCharsets.UTF_8);
+        if (data.length > MAX_MESSAGE_BYTES) {
+            plugin.getLogger().warning("跨服消息超过插件消息上限，已丢弃（" + data.length + " 字节）。");
+            return;
+        }
         Player carrier = carrier();
         if (carrier == null) {
             if (queueIfOffline) {
-                storeOrEnqueue(json, data);
+                enqueue(data);
             }
             return;
         }
         plugin.scheduler().atEntity(carrier, () -> {
             try {
                 if (!carrier.isOnline()) {
-                    // 承载玩家在投递前离线：按队列语义处理，避免消息静默丢失
                     carrierId = null;
                     if (queueIfOffline) {
-                        storeOrEnqueue(json, data);
+                        enqueue(data);
                     }
                     return;
                 }
                 carrier.sendPluginMessage(plugin, channel, data);
-                // 同一目的地/同一类别的旧待发状态已被本次更新覆盖，清掉它（按 ts 判断新旧）
-                boolean hasPending;
-                synchronized (pendingState) {
-                    hasPending = !pendingState.isEmpty();
-                }
-                if (hasPending) {
-                    StateRef ref = stateRefOf(json);
-                    if (ref != null) {
-                        synchronized (pendingState) {
-                            PendingState queued = pendingState.get(ref.key());
-                            if (queued != null && queued.ts() <= ref.ts()) {
-                                pendingState.remove(ref.key());
-                            }
-                        }
-                    }
-                }
             } catch (Throwable t) {
                 plugin.debug("发送跨服消息失败: " + t.getMessage());
                 carrierId = null;
                 if (queueIfOffline) {
-                    storeOrEnqueue(json, data);
+                    enqueue(data);
                 }
             }
         });
-    }
-
-    /**
-     * 发送失败/无承载连接时的处理：聊天与私聊进普通队列按序重放；
-     * 状态类消息按 uuid 合并到 pendingState，只重试最后一次变更，避免旧值覆盖新状态。
-     */
-    private void storeOrEnqueue(String json, byte[] data) {
-        StateRef ref = stateRefOf(json);
-        if (ref == null) {
-            enqueue(data);
-            return;
-        }
-        synchronized (pendingState) {
-            PendingState existing = pendingState.get(ref.key());
-            // 较新者胜：只有更新的变更才覆盖待发项，避免跨区域线程顺序反转时旧值覆盖新值
-            if (existing == null || ref.ts() >= existing.ts()) {
-                pendingState.put(ref.key(), new PendingState(data, ref.ts()));
-            }
-            while (pendingState.size() > queueCapacity) {
-                var iterator = pendingState.keySet().iterator();
-                if (!iterator.hasNext()) {
-                    break;
-                }
-                iterator.next();
-                iterator.remove();
-            }
-        }
-        resyncNeeded = true;
-    }
-
-    /**
-     * 状态类消息的合并键：必须按「目的地/类别」区分。
-     * <p>
-     * KV_SET / KV_DEL 写的是代理端权威存储，MUTE_UPDATE 只是转发给其它后端的实时广播；
-     * 二者若共用一个键，广播会覆盖（或成功路径误删）权威写入，导致空服控制台 mute/unmute
-     * 丢失并在下一次全量同步时被静默回滚。
-     */
-    private StateRef stateRefOf(String json) {
-        try {
-            JsonObject object = JsonParser.parseString(json).getAsJsonObject();
-            String type = object.has("type") ? object.get("type").getAsString() : "";
-            long ts = object.has("ts") ? object.get("ts").getAsLong() : 0L;
-            JsonObject data = object.has("data") && object.get("data").isJsonObject()
-                    ? object.getAsJsonObject("data") : new JsonObject();
-            if (TYPE_KV_SET.equals(type) || TYPE_KV_DEL.equals(type)) {
-                String key = data.has("key") ? data.get("key").getAsString() : "";
-                String field = data.has("field") ? data.get("field").getAsString() : "";
-                return new StateRef("kv:" + key + ":" + field, ts);
-            }
-            if ("MUTE_UPDATE".equals(type)) {
-                String uuid = data.has("uuid") ? data.get("uuid").getAsString() : "";
-                return new StateRef("upd:" + uuid, ts);
-            }
-            return null;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    /** 状态类消息的合并键与时间戳。 */
-    private record StateRef(String key, long ts) {
-    }
-
-    /** 待重发的状态消息（按类别合并，最多保留每个键最新的一条）。 */
-    private record PendingState(byte[] data, long ts) {
     }
 
     private void enqueue(byte[] data) {

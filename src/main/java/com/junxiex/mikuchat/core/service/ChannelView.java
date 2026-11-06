@@ -26,7 +26,4 @@ public interface ChannelView {
 
     /** 是否写入聊天留档。 */
     boolean log();
-
-    /** 是否存在（配置被删除后为 false）。 */
-    boolean valid();
 }

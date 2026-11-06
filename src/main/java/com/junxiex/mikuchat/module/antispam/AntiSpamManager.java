@@ -123,28 +123,25 @@ public final class AntiSpamManager implements AntiSpamService {
         });
     }
 
+    /** 调用方已持有该玩家的 state 锁。 */
     private boolean consumeToken(PlayerSpamState state, AntiSpamProfile profile) {
-        // 「读令牌 → 补算 → 扣减」必须整体原子，否则并发下会多放行或多拦截；
-        // 因此在这里对 state 加锁，而不是依赖逐个 getter/setter 的原子性。
-        synchronized (state) {
-            double capacity = profile.throttleMax();
-            long now = System.nanoTime();
-            if (!state.initialized()) {
-                // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
-                state.tokens(capacity);
-                state.lastRefillNanos(now);
-                state.initialized(true);
-            }
-            double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
-            long elapsedNanos = now - state.lastRefillNanos();
+        double capacity = profile.throttleMax();
+        long now = System.nanoTime();
+        if (!state.initialized()) {
+            // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
+            state.tokens(capacity);
             state.lastRefillNanos(now);
-            state.tokens(Math.min(capacity, state.tokens() + elapsedNanos / 1_000_000.0 * ratePerMilli));
-            if (state.tokens() >= 1.0) {
-                state.tokens(state.tokens() - 1.0);
-                return true;
-            }
-            return false;
+            state.initialized(true);
         }
+        double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
+        long elapsedNanos = now - state.lastRefillNanos();
+        state.lastRefillNanos(now);
+        state.tokens(Math.min(capacity, state.tokens() + elapsedNanos / 1_000_000.0 * ratePerMilli));
+        if (state.tokens() >= 1.0) {
+            state.tokens(state.tokens() - 1.0);
+            return true;
+        }
+        return false;
     }
 
     private boolean isSimilar(String text, PlayerSpamState state, AntiSpamProfile profile) {

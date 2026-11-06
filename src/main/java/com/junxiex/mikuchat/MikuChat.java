@@ -132,7 +132,8 @@ public final class MikuChat extends JavaPlugin implements Listener {
     }
 
     public void reloadAll() {
-        configManager.reloadAll();
+        // 各模块 reload 会读取自己的配置文件，这里不重复 reloadAll，避免 14 个配置各解析两次
+        configManager.reload("config.yml");
         lang.load(configManager.get("config.yml").config().getString("language", "zh_CN"));
         refreshCoreCache();
         moduleManager.reloadAll();

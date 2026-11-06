@@ -26,8 +26,8 @@ import java.util.Set;
  * <p>
  * 屏蔽词只归一化一次；广告规则另用一份「不套用忽略字符集」的归一化视图，因为
  * URL / IP / 域名规则依赖 {@code . : /} 等结构字符，屏蔽词的忽略字符集会把这些字符
- * 删掉。广告同时看「广告归一化 / 屏蔽词归一化 / 原文」三种视图，命中区间统一换算到
- * 屏蔽词归一化下标后与屏蔽词区间合并，最后一次性映射回原文替换。
+ * 删掉。广告同时看「广告归一化 / 原文」两种视图，命中区间统一换算到屏蔽词归一化
+ * 下标后与屏蔽词区间合并，最后一次性映射回原文替换。
  * <p>
  * 此外还提供 {@link #blockedByVisibleText} 供渲染后二次校验：玩家用 MiniMessage 标签
  * 把敏感词拆开时，原文匹配不到、但玩家实际看到的文本仍然命中。
@@ -74,7 +74,7 @@ public final class FilterManager implements FilterService {
         //     连普通链接都检测不到；
         //   - 折叠重复会把 http 折成 htp、把 // 折成 /，URL 规则同样失效；
         //   - 删空白会让 \S+ 越过空格把后一个词吞进链接（"http://x.com 你好" 被整段替换），
-        //     所以空白必须保留，空格拆字另用 compactWhitespace 视图仅做命中判定。
+        //     所以空白必须保留。
         TextNormalizer adNormalizer = new TextNormalizer(
                 config.config().getBoolean("normalize.full-width", true),
                 config.config().getBoolean("normalize.lowercase", true),
@@ -147,13 +147,13 @@ public final class FilterManager implements FilterService {
         List<int[]> ranges = new ArrayList<>();
         boolean advertisement = false;
         if (profile.advertisementEnabled()) {
-            Advertisement ad = collectAdvertisement(current, profile, text, normalized);
-            if (ad.hit()) {
+            List<int[]> adRanges = detectAdvertisement(current, profile, text, normalized);
+            if (!adRanges.isEmpty()) {
                 advertisement = true;
-                if (profile.advertisementBlock() || ad.unlocatable()) {
+                if (profile.advertisementBlock()) {
                     return new Result(text, false, profile.notifySender(), true, true);
                 }
-                ranges.addAll(ad.ranges());
+                ranges.addAll(adRanges);
             }
         }
 
@@ -186,20 +186,16 @@ public final class FilterManager implements FilterService {
         if (profile == null) {
             return false;
         }
-        // 与 apply 保持一致：归一化只做一次，广告复用同一套三视图检测
         TextNormalizer.Normalized normalized = current.normalizer().normalize(visibleText);
-        String senderName = sender == null ? "?" : sender.getName();
         if (profile.advertisementEnabled()
-                && collectAdvertisement(current, profile, visibleText, normalized).hit()) {
-            // 「替换」模式下命中广告本来只做遮字，但经由标签拆词才露出广告属于刻意规避，
-            // 这里一律按拦截处理，并记录原因方便服主追查。
-            plugin.debug("过滤二次校验拦截：可见文本命中广告规则（疑似标签拆词绕过），发送者 "
-                    + senderName);
+                && !detectAdvertisement(current, profile, visibleText, normalized).isEmpty()) {
+            plugin.debug("过滤二次校验拦截：可见文本命中广告规则，发送者 "
+                    + (sender == null ? "?" : sender.getName()));
             return true;
         }
         if (!scanNormalized(current, visibleText, normalized).ranges().isEmpty()) {
-            plugin.debug("过滤二次校验拦截：可见文本命中屏蔽词（疑似标签拆词绕过），发送者 "
-                    + senderName);
+            plugin.debug("过滤二次校验拦截：可见文本命中屏蔽词，发送者 "
+                    + (sender == null ? "?" : sender.getName()));
             return true;
         }
         return false;
@@ -210,7 +206,9 @@ public final class FilterManager implements FilterService {
         if (text == null || text.isEmpty()) {
             return List.of();
         }
-        return new ArrayList<>(new LinkedHashSet<>(scan(state, text).patterns()));
+        State current = state;
+        return new ArrayList<>(new LinkedHashSet<>(
+                scanNormalized(current, text, current.normalizer().normalize(text)).patterns()));
     }
 
     public boolean scanAdvertisement(String text) {
@@ -228,8 +226,7 @@ public final class FilterManager implements FilterService {
         if (profile == null || !profile.advertisementEnabled()) {
             return false;
         }
-        // 与运行时 apply 使用同一套三视图 + 空格拆字判定，避免 /mchat filter test 与线上不一致
-        return collectAdvertisement(current, profile, text, current.normalizer().normalize(text)).hit();
+        return !detectAdvertisement(current, profile, text, current.normalizer().normalize(text)).isEmpty();
     }
 
     public int wordCount() {
@@ -237,94 +234,37 @@ public final class FilterManager implements FilterService {
     }
 
     /**
-     * 汇总广告命中区间，并统一换算到「屏蔽词归一化下标」空间。
+     * 广告命中区间，统一换算到「屏蔽词归一化下标」空间。
      * <p>
-     * 广告规则必须同时看三种文本视图，缺一不可：
-     * <ul>
-     *   <li>广告归一化（全角→半角、小写，保留空白与 {@code . : / @}，不折叠重复）：
-     *       修「全角链接」绕过。屏蔽词归一化做不到——它按忽略字符集把这些结构字符删掉，
-     *       URL / IP / 域名规则会全部失效，连普通链接都检测不到；</li>
-     *   <li>原文：归一化会折叠全角字符与大小写，可能改变 {@code (?<!\w)} 这类边界断言的
-     *       上下文（全角字母被折成 ASCII 字母后，其前面的字符可能新变成「单词字符」），
-     *       因此保留原文做兜底；</li>
-     *   <li>屏蔽词归一化文本：补上纯字母数字规则被标点拆开的情况（如 {@code qq...123456}）。</li>
-     * </ul>
-     * 三种视图的命中区间统一到屏蔽词归一化下标后，才能和屏蔽词区间一起合并、一次替换。
+     * 同时看广告归一化（全角→半角、小写，保留 URL 结构字符与空白）与原文：
+     * 前者识别全角 / 大小写变形，后者兜住归一化改变边界断言上下文的情况。
+     * 屏蔽词归一化会删掉 {@code . : /}，不能用于广告规则。
      */
-    private Advertisement collectAdvertisement(State current, FilterProfile profile, String text,
-                                              TextNormalizer.Normalized normalized) {
+    private List<int[]> detectAdvertisement(State current, FilterProfile profile, String text,
+                                           TextNormalizer.Normalized normalized) {
         AdDetector detector = profile.adDetector();
         TextNormalizer.Normalized adNormalized = current.adNormalizer().normalize(text);
-        List<int[]> wordView = detector.findMatches(normalized.text());
-        List<int[]> adView = detector.findMatches(adNormalized.text());
-        List<int[]> rawView = detector.findMatches(text);
-        boolean hit = !wordView.isEmpty() || !adView.isEmpty() || !rawView.isEmpty();
-        boolean compactOnlyHit = false;
-        if (!hit) {
-            // 空格拆字（h t t p : / / ...）只有把空白全部去掉才能被 URL 规则命中。
-            // 去空白会把链接与后一个词粘连，用它计算替换区间会多吞字，因此只用于命中判定；
-            // 文本本身没有空白时无需再做这次额外检测。
-            String adText = adNormalized.text();
-            if (containsWhitespace(adText)) {
-                compactOnlyHit = !detector.findMatches(compactWhitespace(adText)).isEmpty();
-            }
-            if (!compactOnlyHit) {
-                return new Advertisement(false, false, List.of());
-            }
-        }
-        List<int[]> ranges = new ArrayList<>(wordView);
-        for (int[] range : adView) {
+        List<int[]> ranges = new ArrayList<>();
+        for (int[] range : detector.findMatches(adNormalized.text())) {
             int[] mapped = toNormalizedRange(normalized,
                     adNormalized.originalStart(range[0]), adNormalized.originalEnd(range[1]));
             if (mapped != null) {
                 ranges.add(mapped);
             }
         }
-        for (int[] range : rawView) {
+        for (int[] range : detector.findMatches(text)) {
             int[] mapped = toNormalizedRange(normalized, range[0], range[1]);
             if (mapped != null) {
                 ranges.add(mapped);
             }
         }
-        // 只有 compact 视图命中时无法给出替换区间：若配置是「仅替换」模式，静默放行等于让
-        // 空格拆字完全绕过广告过滤，因此标记为 unlocatable，调用方按整条拦截处理。
-        boolean unlocatable = compactOnlyHit && ranges.isEmpty();
-        return new Advertisement(true, unlocatable, ranges);
-    }
-
-    /** 文本中是否含空白字符（用于避免无谓的空格拆字检测）。 */
-    private boolean containsWhitespace(String text) {
-        for (int i = 0; i < text.length(); i++) {
-            if (Character.isWhitespace(text.charAt(i))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** 去掉所有空白字符；仅用于空格拆字的命中判定，不参与替换区间计算。 */
-    private String compactWhitespace(String text) {
-        StringBuilder builder = new StringBuilder(text.length());
-        for (int i = 0; i < text.length(); i++) {
-            char ch = text.charAt(i);
-            if (!Character.isWhitespace(ch)) {
-                builder.append(ch);
-            }
-        }
-        return builder.toString();
-    }
-
-    private Scan scan(State current, String text) {
-        if (current.automaton() == null || current.automaton().size() == 0) {
-            return new Scan(List.of(), List.of());
-        }
-        return scanNormalized(current, text, current.normalizer().normalize(text));
+        return ranges;
     }
 
     /** 在调用方已归一化好的文本上扫描，供 apply / blockedByVisibleText 复用同一份归一化结果。 */
     private Scan scanNormalized(State current, String original, TextNormalizer.Normalized normalized) {
         AhoCorasick automaton = current.automaton();
-        if (automaton == null || automaton.size() == 0) {
+        if (automaton.size() == 0) {
             return new Scan(List.of(), List.of());
         }
         List<AhoCorasick.Match> matches = automaton.findMatches(normalized.text());
@@ -440,11 +380,9 @@ public final class FilterManager implements FilterService {
         StringBuilder builder = new StringBuilder(text.length());
         int last = 0;
         for (int[] range : ranges) {
-            int start = Math.max(last, Math.min(range[0], text.length()));
-            int end = Math.max(start, Math.min(range[1], text.length()));
-            builder.append(text, last, start);
-            builder.append(replacement(replacement, end - start));
-            last = end;
+            builder.append(text, last, range[0]);
+            builder.append(replacement(replacement, range[1] - range[0]));
+            last = range[1];
         }
         if (last < text.length()) {
             builder.append(text, last, text.length());
@@ -504,13 +442,6 @@ public final class FilterManager implements FilterService {
 
     /** 单次匹配结果。 */
     private record Scan(List<int[]> ranges, List<String> patterns) {
-    }
-
-    /**
-     * 广告检测结果：是否命中 + 已换算到归一化下标的替换区间。
-     * {@code unlocatable} 表示只能证明命中、无法安全定位区间（空格拆字视图），此类命中按整条拦截处理。
-     */
-    private record Advertisement(boolean hit, boolean unlocatable, List<int[]> ranges) {
     }
 
     /** 一份自洽的运行时配置快照。 */

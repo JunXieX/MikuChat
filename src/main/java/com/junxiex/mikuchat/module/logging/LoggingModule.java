@@ -5,9 +5,12 @@ import com.junxiex.mikuchat.core.config.ConfigFile;
 import com.junxiex.mikuchat.core.module.ChatModule;
 import com.junxiex.mikuchat.core.service.ChatLogService;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -20,7 +23,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
-import java.util.stream.Stream;
 
 /**
  * 聊天留档模块：公开聊天按天写入文件，支持关键词检索。
@@ -98,7 +100,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                 .replace("{time}", now.format(timeFormat))
                 .replace("{channel}", channelId)
                 .replace("{sender}", senderName)
-                .replace("{message}", message);
+                .replace("{message}", com.junxiex.mikuchat.core.text.TextUtil.oneLine(message));
         plugin.fileWriter().append(directory().resolve(now.format(fileFormat) + ".log"), line);
     }
 
@@ -112,6 +114,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         // 双重保险：无论调用方传入多大的 limit，都不超过配置的上限
         int effectiveLimit = limit > 0 ? Math.min(limit, configuredMax) : configuredMax;
         int days = Math.max(1, config.config().getInt("search-days", 7));
+        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 16384) * 1024);
         String needle = keyword.toLowerCase(Locale.ROOT);
         plugin.scheduler().async(() -> {
             List<String> found = new ArrayList<>(Math.min(effectiveLimit, 64));
@@ -124,7 +127,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                         break;
                     }
                     processed++;
-                    collectFromFile(file, needle, effectiveLimit - found.size(), found, effectiveLimit);
+                    collectFromFile(file, needle, effectiveLimit - found.size(), maxBytes, found);
                 }
             }
             callback.accept(found);
@@ -132,20 +135,30 @@ public final class LoggingModule implements ChatModule, ChatLogService {
     }
 
     /**
-     * 流式读取单个日志文件，只保留该文件中最新的若干条命中，避免把整个文件读入内存。
+     * 只读取文件末尾 {@code maxBytes}，从新到旧取命中。日志按天增长，
+     * 全量扫描几天前的文件对「查最近聊天」没有意义，还会随运行时间线性变慢。
      */
-    private void collectFromFile(File file, String needle, int remaining, List<String> found, int hardLimit) {
-        if (remaining <= 0) {
+    private void collectFromFile(File file, String needle, int maxResults, int maxBytes, List<String> found) {
+        if (maxResults <= 0) {
             return;
         }
-        Deque<String> tail = new ArrayDeque<>(Math.min(remaining, 64));
-        try (Stream<String> lines = Files.lines(file.toPath(), StandardCharsets.UTF_8)) {
-            Iterator<String> iterator = lines.iterator();
-            while (iterator.hasNext()) {
-                String line = iterator.next();
+        long start = Math.max(0, file.length() - maxBytes);
+        Deque<String> tail = new ArrayDeque<>(Math.min(maxResults, 64));
+        try (FileChannel channel = FileChannel.open(file.toPath());
+             BufferedReader reader = new BufferedReader(new InputStreamReader(
+                     Channels.newInputStream(channel.position(start)), StandardCharsets.UTF_8))) {
+            // 从文件中段开始时第一行可能被截断；文件本身小于预算时保留第一行
+            if (start > 0) {
+                reader.readLine();
+            }
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.endsWith("\r")) {
+                    line = line.substring(0, line.length() - 1);
+                }
                 if (line.toLowerCase(Locale.ROOT).contains(needle)) {
                     tail.addLast(line);
-                    if (tail.size() > remaining) {
+                    if (tail.size() > maxResults) {
                         tail.removeFirst();
                     }
                 }
@@ -154,9 +167,8 @@ public final class LoggingModule implements ChatModule, ChatLogService {
             plugin.getLogger().warning("读取聊天记录失败 " + file.getName() + ": " + e.getMessage());
             return;
         }
-        // tail 中保留的是该文件最新的命中，按时间倒序追加到结果
         Iterator<String> descending = tail.descendingIterator();
-        while (descending.hasNext() && found.size() < hardLimit) {
+        while (descending.hasNext()) {
             found.add(descending.next());
         }
     }
