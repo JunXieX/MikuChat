@@ -39,7 +39,7 @@ public final class StyleFilter {
     private static final Set<String> DECORATIONS = Set.of(
             "bold", "b", "italic", "i", "underlined", "u", "strikethrough", "st", "obfuscated", "obf");
 
-    private static final String[] PERMISSION_KEYS = {"color-named", "color-hex", "decoration", "advanced", "minimessage"};
+    private static final String[] PERMISSION_KEYS = {"color-named", "color-hex", "decoration", "advanced"};
 
     private final ConfigFile config;
     private final MikuChat plugin;
@@ -135,7 +135,8 @@ public final class StyleFilter {
         if (player == null) {
             return false;
         }
-        if (has(player, "minimessage")) {
+        if (has(player, "advanced")) {
+            // advanced 即完整 MiniMessage 权限，见 style.yml
             return true;
         }
         String tag = inner.startsWith("/") ? inner.substring(1) : inner;

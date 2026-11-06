@@ -4,10 +4,12 @@ import com.junxiex.mikuchat.MikuChat;
 import com.junxiex.mikuchat.core.service.ChannelService;
 import com.junxiex.mikuchat.core.service.ChannelView;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -36,7 +38,19 @@ public final class ChannelManager implements ChannelService {
         File[] files = dir.listFiles((d, name) -> name.toLowerCase(Locale.ROOT).endsWith(".yml"));
         if (files != null) {
             for (File file : files) {
-                YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+                YamlConfiguration yaml = new YamlConfiguration();
+                try {
+                    yaml.load(file);
+                } catch (IOException | InvalidConfigurationException e) {
+                    // loadConfiguration(File) 会吞掉语法错误并返回空配置，导致频道被静默降级为公开 SERVER 频道
+                    plugin.getLogger().warning("频道配置 " + file.getName() + " 解析失败，已跳过: " + e.getMessage());
+                    continue;
+                }
+                String scope = yaml.getString("scope", "SERVER");
+                if (!"SERVER".equalsIgnoreCase(scope) && !"NETWORK".equalsIgnoreCase(scope)) {
+                    plugin.getLogger().warning("频道配置 " + file.getName() + " 的 scope=" + scope
+                            + " 无效，已按 SERVER 处理。");
+                }
                 String id = yaml.getString("id", file.getName().replace(".yml", ""));
                 loaded.put(id.toLowerCase(Locale.ROOT), new Channel(id, yaml));
             }

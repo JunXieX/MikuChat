@@ -75,8 +75,4 @@ public final class Channel implements ChannelView {
         return log;
     }
 
-    @Override
-    public boolean valid() {
-        return true;
-    }
 }

@@ -6,21 +6,17 @@ import com.junxiex.mikuchat.core.module.ChatModule;
 import com.junxiex.mikuchat.core.service.ChatLogService;
 
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Deque;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
-import java.util.stream.Stream;
 
 /**
  * 聊天留档模块：公开聊天按天写入文件，支持关键词检索。
@@ -98,7 +94,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                 .replace("{time}", now.format(timeFormat))
                 .replace("{channel}", channelId)
                 .replace("{sender}", senderName)
-                .replace("{message}", message);
+                .replace("{message}", com.junxiex.mikuchat.core.text.TextUtil.oneLine(message));
         plugin.fileWriter().append(directory().resolve(now.format(fileFormat) + ".log"), line);
     }
 
@@ -112,6 +108,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         // 双重保险：无论调用方传入多大的 limit，都不超过配置的上限
         int effectiveLimit = limit > 0 ? Math.min(limit, configuredMax) : configuredMax;
         int days = Math.max(1, config.config().getInt("search-days", 7));
+        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 4096) * 1024);
         String needle = keyword.toLowerCase(Locale.ROOT);
         plugin.scheduler().async(() -> {
             List<String> found = new ArrayList<>(Math.min(effectiveLimit, 64));
@@ -124,7 +121,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                         break;
                     }
                     processed++;
-                    collectFromFile(file, needle, effectiveLimit - found.size(), found, effectiveLimit);
+                    collectFromFile(file, needle, effectiveLimit - found.size(), maxBytes, found);
                 }
             }
             callback.accept(found);
@@ -132,33 +129,46 @@ public final class LoggingModule implements ChatModule, ChatLogService {
     }
 
     /**
-     * 流式读取单个日志文件，只保留该文件中最新的若干条命中，避免把整个文件读入内存。
+     * 只读取文件末尾 {@code maxBytes}，从新到旧取命中。日志按天增长，
+     * 全量扫描几天前的文件对「查最近聊天」没有意义，还会随运行时间线性变慢。
      */
-    private void collectFromFile(File file, String needle, int remaining, List<String> found, int hardLimit) {
-        if (remaining <= 0) {
+    private void collectFromFile(File file, String needle, int maxResults, int maxBytes, List<String> found) {
+        if (maxResults <= 0) {
             return;
         }
-        Deque<String> tail = new ArrayDeque<>(Math.min(remaining, 64));
-        try (Stream<String> lines = Files.lines(file.toPath(), StandardCharsets.UTF_8)) {
-            Iterator<String> iterator = lines.iterator();
-            while (iterator.hasNext()) {
-                String line = iterator.next();
-                if (line.toLowerCase(Locale.ROOT).contains(needle)) {
-                    tail.addLast(line);
-                    if (tail.size() > remaining) {
-                        tail.removeFirst();
-                    }
-                }
-            }
+        String content;
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            long start = Math.max(0, raf.length() - maxBytes);
+            raf.seek(start);
+            byte[] buffer = new byte[(int) (raf.length() - start)];
+            raf.readFully(buffer);
+            content = new String(buffer, StandardCharsets.UTF_8);
         } catch (Exception e) {
             plugin.getLogger().warning("读取聊天记录失败 " + file.getName() + ": " + e.getMessage());
             return;
         }
-        // tail 中保留的是该文件最新的命中，按时间倒序追加到结果
-        Iterator<String> descending = tail.descendingIterator();
-        while (descending.hasNext() && found.size() < hardLimit) {
-            found.add(descending.next());
+        int firstNewline = content.indexOf('\n');
+        if (firstNewline >= 0) {
+            content = content.substring(firstNewline + 1);
         }
+        String[] lines = content.split("\n");
+        int added = 0;
+        for (int i = lines.length - 1; i >= 0 && added < maxResults; i--) {
+            if (containsIgnoreCase(lines[i], needle)) {
+                found.add(lines[i]);
+                added++;
+            }
+        }
+    }
+
+    private static boolean containsIgnoreCase(String text, String lowerNeedle) {
+        int length = lowerNeedle.length();
+        for (int i = 0; i + length <= text.length(); i++) {
+            if (text.regionMatches(true, i, lowerNeedle, 0, length)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Path directory() {

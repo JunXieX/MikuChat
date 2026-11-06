@@ -5,10 +5,6 @@ import com.junxiex.mikuchat.core.config.ConfigFile;
 import com.junxiex.mikuchat.core.text.MetaBridge;
 import com.junxiex.mikuchat.core.text.TextUtil;
 import net.kyori.adventure.text.Component;
-import net.luckperms.api.LuckPerms;
-import net.luckperms.api.LuckPermsProvider;
-import net.luckperms.api.cacheddata.CachedMetaData;
-import net.luckperms.api.model.user.User;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
@@ -22,7 +18,7 @@ public final class Integrations implements MetaBridge {
     private final ConfigFile config;
 
     // 由命令线程在 /mchat reload 时写入、由聊天线程读取，必须 volatile 保证可见性
-    private volatile LuckPerms luckPerms;
+    private volatile LuckPermsHook luckPerms;
     private volatile boolean placeholderApi;
     private volatile boolean miniMessageMeta;
 
@@ -41,10 +37,9 @@ public final class Integrations implements MetaBridge {
         if (lpConfigured) {
             Plugin lpPlugin = Bukkit.getPluginManager().getPlugin("LuckPerms");
             if (lpPlugin != null && lpPlugin.isEnabled()) {
-                try {
-                    this.luckPerms = LuckPermsProvider.get();
-                } catch (Throwable t) {
-                    plugin.getLogger().warning("LuckPerms 已安装但 API 不可用: " + t.getMessage());
+                this.luckPerms = LuckPermsHook.create();
+                if (this.luckPerms == null) {
+                    plugin.getLogger().warning("LuckPerms 已安装但 API 不可用。");
                 }
             }
         }
@@ -73,7 +68,7 @@ public final class Integrations implements MetaBridge {
 
     @Override
     public Component prefix(Player player) {
-        String raw = meta(player, CachedMetaData::getPrefix);
+        String raw = luckPerms == null ? null : luckPerms.prefix(player);
         if (raw == null || raw.isEmpty()) {
             raw = config.config().getString("luckperms.prefix-default", "");
         }
@@ -82,7 +77,7 @@ public final class Integrations implements MetaBridge {
 
     @Override
     public Component suffix(Player player) {
-        String raw = meta(player, CachedMetaData::getSuffix);
+        String raw = luckPerms == null ? null : luckPerms.suffix(player);
         if (raw == null || raw.isEmpty()) {
             raw = config.config().getString("luckperms.suffix-default", "");
         }
@@ -91,14 +86,9 @@ public final class Integrations implements MetaBridge {
 
     @Override
     public String group(Player player) {
-        if (player != null && luckPerms != null) {
-            User user = luckPerms.getUserManager().getUser(player.getUniqueId());
-            if (user != null) {
-                String group = user.getPrimaryGroup();
-                if (group != null && !group.isEmpty()) {
-                    return group;
-                }
-            }
+        String group = luckPerms == null ? null : luckPerms.group(player);
+        if (group != null && !group.isEmpty()) {
+            return group;
         }
         return config.config().getString("luckperms.group-default", "default");
     }
@@ -114,18 +104,6 @@ public final class Integrations implements MetaBridge {
             plugin.debug("PlaceholderAPI 解析失败 " + params + ": " + t.getMessage());
             return null;
         }
-    }
-
-    private String meta(Player player, java.util.function.Function<CachedMetaData, String> getter) {
-        if (player == null || luckPerms == null) {
-            return null;
-        }
-        User user = luckPerms.getUserManager().getUser(player.getUniqueId());
-        if (user == null) {
-            return null;
-        }
-        CachedMetaData metaData = user.getCachedData().getMetaData();
-        return getter.apply(metaData);
     }
 
     private Component parseMeta(String raw) {

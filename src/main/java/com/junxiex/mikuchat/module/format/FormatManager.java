@@ -7,8 +7,6 @@ import com.junxiex.mikuchat.core.service.FormatService;
 import com.junxiex.mikuchat.core.text.TemplateRenderer;
 import com.junxiex.mikuchat.core.text.TextUtil;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
-import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
 
@@ -25,8 +23,6 @@ import java.util.Set;
 public final class FormatManager implements FormatService {
 
     private static final String FALLBACK = "<gray>%player% <dark_gray>»<white> <message>";
-    /** 预校验模板时用于替代 <message> / <channel> 的占位符，避免合法模板被误判为未知标签。 */
-    private static final TagResolver FORMAT_PLACEHOLDERS = createFormatPlaceholders();
     /** 失败告警的去重上限，避免配置写坏时把控制台刷爆。 */
     private static final int MAX_REPORTED_FAILURES = 32;
 
@@ -53,12 +49,7 @@ public final class FormatManager implements FormatService {
             for (String key : section.getKeys(false)) {
                 ConfigurationSection ruleSection = section.getConfigurationSection(key);
                 if (ruleSection != null) {
-                    FormatRule rule = FormatRule.from(ruleSection, key);
-                    // 预校验：format 不是合法 MiniMessage 时直接跳过该规则。
-                    // 否则运行期每条聊天消息都会在渲染时抛解析异常，整条消息都发不出去。
-                    if (validateTemplate(rule.id(), rule.format())) {
-                        loaded.add(rule);
-                    }
+                    loaded.add(FormatRule.from(ruleSection, key));
                 }
             }
         }
@@ -110,31 +101,6 @@ public final class FormatManager implements FormatService {
         }
         channelCache.put(key, parsed);
         return parsed;
-    }
-
-    /**
-     * 预解析校验 format 模板；非法时告警一次并返回 false，由调用方跳过该规则。
-     * <p>
-     * 校验时必须提供 message / channel 两个占位符：它们是运行时由 {@link TemplateRenderer}
-     * 注入的标签，直接 {@code TextUtil.parse} 会被当成未知标签而误杀所有合法规则。
-     */
-    private boolean validateTemplate(String ruleId, String template) {
-        try {
-            TextUtil.mini().deserialize(template == null ? "" : template, FORMAT_PLACEHOLDERS);
-            return true;
-        } catch (RuntimeException e) {
-            warnOnce("rule:" + ruleId, "format.yml 规则 " + ruleId
-                    + " 的 format 不是合法的 MiniMessage，已跳过该规则: " + e.getMessage());
-            return false;
-        }
-    }
-
-    /** 与 {@link TemplateRenderer} 相同的构建方式，保证校验与运行期使用的是同一套占位符标签。 */
-    private static TagResolver createFormatPlaceholders() {
-        TagResolver.Builder builder = TagResolver.builder();
-        builder.resolver(Placeholder.component("message", Component.empty()));
-        builder.resolver(Placeholder.component("channel", Component.empty()));
-        return builder.build();
     }
 
     /** 失败告警去重：同一原因只提示一次，总量有上限，避免配置写坏时刷爆控制台。 */

@@ -95,8 +95,7 @@ public final class DisplayManager implements ChatTokenHandler {
         Player player = context.sender();
         String permission = permissions.get(type);
         if (permission != null && !permission.isEmpty() && !player.hasPermission(permission)) {
-            plugin.scheduler().atEntity(player, () -> player.sendMessage(
-                    plugin.lang().get("generic.no-permission")));
+            notifyLimited(player, "denied:" + type.name(), () -> plugin.lang().get("generic.no-permission"));
             return null;
         }
         // 顺序：先做廉价可行性检查（不构建组件）→ 消费冷却 → 构建 hover。
@@ -136,9 +135,9 @@ public final class DisplayManager implements ChatTokenHandler {
         return switch (type) {
             case ITEM -> renderItem(player);
             case INVENTORY -> renderContainer(player, target, size, "display.inventory-title",
-                    "display.label-inventory", "display.empty-inventory");
+                    "display.label-inventory");
             case ENDERCHEST -> renderContainer(player, target, size, "display.enderchest-title",
-                    "display.label-enderchest", "display.empty-enderchest");
+                    "display.label-enderchest");
         };
     }
 
@@ -202,33 +201,23 @@ public final class DisplayManager implements ChatTokenHandler {
     }
 
     private Component renderContainer(Player player, Inventory inventory, int size, String titleKey,
-                                      String labelKey, String emptyKey) {
-        Component grid = buildGrid(player, inventory, size, titleKey);
-        if (grid == null) {
-            notifyLimited(player, "empty:" + labelKey, () -> plugin.lang().get(emptyKey));
-            return null;
-        }
+                                      String labelKey) {
         Component label = plugin.lang().get(labelKey);
-        return label.hoverEvent(HoverEvent.showText(grid));
+        return label.hoverEvent(HoverEvent.showText(buildGrid(player, inventory, size, titleKey)));
     }
 
+    /** 调用方已确认背包非空，这里只负责构建展示内容。 */
     private Component buildGrid(Player player, Inventory inventory, int size, String titleKey) {
-        Component title = plugin.lang().get(titleKey, "player", player.getName());
-        boolean empty = true;
-        Component result = title;
+        Component result = plugin.lang().get(titleKey, "player", player.getName());
         int rows = size / 9;
         for (int row = 0; row < rows; row++) {
             Component line = Component.empty();
             for (int col = 0; col < 9; col++) {
-                ItemStack stack = inventory.getItem(row * 9 + col);
-                if (stack != null && !stack.getType().isAir()) {
-                    empty = false;
-                }
-                line = line.append(compact(stack)).append(Component.text("  "));
+                line = line.append(compact(inventory.getItem(row * 9 + col))).append(Component.text("  "));
             }
             result = result.append(Component.newline()).append(line);
         }
-        return empty ? null : result;
+        return result;
     }
 
     private Component compact(ItemStack stack) {
