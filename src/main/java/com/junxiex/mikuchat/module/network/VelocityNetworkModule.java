@@ -106,6 +106,10 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         // 队列容量必须为正：<=0 会让下面的裁剪循环永远成立（负数时直接死循环），
         // 而 0 会造成「每条都先被清空再入队」，等于队列失效。
         this.queueCapacity = Math.max(1, config.config().getInt("outbound-queue-capacity", 1024));
+        if (config.config().isSet("trusted-servers")) {
+            plugin.getLogger().warning("network.yml 的 trusted-servers 已在 1.8 移除并被忽略；"
+                    + "跨服消息由 shared-secret 签名保证来源，请删除该配置项。");
+        }
 
         this.sharedSecret = config.config().getString("shared-secret", "").trim();
         this.proxyConnected = false;

@@ -114,7 +114,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         // 双重保险：无论调用方传入多大的 limit，都不超过配置的上限
         int effectiveLimit = limit > 0 ? Math.min(limit, configuredMax) : configuredMax;
         int days = Math.max(1, config.config().getInt("search-days", 7));
-        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 65536) * 1024);
+        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 16384) * 1024);
         String needle = keyword.toLowerCase(Locale.ROOT);
         plugin.scheduler().async(() -> {
             List<String> found = new ArrayList<>(Math.min(effectiveLimit, 64));
@@ -156,7 +156,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                 if (line.endsWith("\r")) {
                     line = line.substring(0, line.length() - 1);
                 }
-                if (containsIgnoreCase(line, needle)) {
+                if (line.toLowerCase(Locale.ROOT).contains(needle)) {
                     tail.addLast(line);
                     if (tail.size() > maxResults) {
                         tail.removeFirst();
@@ -171,16 +171,6 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         while (descending.hasNext()) {
             found.add(descending.next());
         }
-    }
-
-    private static boolean containsIgnoreCase(String text, String lowerNeedle) {
-        int length = lowerNeedle.length();
-        for (int i = 0; i + length <= text.length(); i++) {
-            if (text.regionMatches(true, i, lowerNeedle, 0, length)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private Path directory() {

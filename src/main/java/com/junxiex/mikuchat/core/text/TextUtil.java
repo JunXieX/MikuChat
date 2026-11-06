@@ -23,6 +23,8 @@ public final class TextUtil {
     private static final PlainTextComponentSerializer PLAIN = PlainTextComponentSerializer.plainText();
     private static final LegacyComponentSerializer LEGACY_AMPERSAND = LegacyComponentSerializer.legacyAmpersand();
     private static final LegacyComponentSerializer LEGACY_SECTION = LegacyComponentSerializer.legacySection();
+    /** 跨服组件 JSON 只有 16KB，正常深度远低于此；超过说明对端构造了异常结构，丢弃该子树。 */
+    private static final int MAX_STRIP_DEPTH = 128;
 
     private TextUtil() {
     }
@@ -78,9 +80,17 @@ public final class TextUtil {
      * translate 的参数不是 children，<lang:...> 可以很容易把组件藏进参数里，必须一并递归。
      */
     public static Component stripInteractive(Component component) {
+        return stripInteractive(component, 0);
+    }
+
+    private static Component stripInteractive(Component component, int depth) {
         if (component == null) {
             return Component.empty();
         }
+        if (depth >= MAX_STRIP_DEPTH) {
+            return Component.empty();
+        }
+        int next = depth + 1;
         Component result = component.style(component.style().clickEvent(null).hoverEvent(null));
         if (result instanceof TranslatableComponent translatable) {
             List<TranslationArgument> arguments = translatable.arguments();
@@ -88,7 +98,7 @@ public final class TextUtil {
                 List<TranslationArgument> cleaned = new ArrayList<>(arguments.size());
                 for (TranslationArgument argument : arguments) {
                     if (argument.value() instanceof Component argumentComponent) {
-                        cleaned.add(TranslationArgument.component(stripInteractive(argumentComponent)));
+                        cleaned.add(TranslationArgument.component(stripInteractive(argumentComponent, next)));
                     } else {
                         cleaned.add(argument);
                     }
@@ -98,19 +108,19 @@ public final class TextUtil {
         } else if (result instanceof SelectorComponent selector) {
             Component separator = selector.separator();
             if (separator != null) {
-                result = selector.separator(stripInteractive(separator));
+                result = selector.separator(stripInteractive(separator, next));
             }
         } else if (result instanceof NBTComponent<?> nbt) {
             Component separator = nbt.separator();
             if (separator != null) {
-                result = nbt.separator(stripInteractive(separator));
+                result = nbt.separator(stripInteractive(separator, next));
             }
         }
         List<Component> children = result.children();
         if (children.isEmpty()) {
             return result;
         }
-        return result.children(children.stream().map(TextUtil::stripInteractive).toList());
+        return result.children(children.stream().map(child -> stripInteractive(child, next)).toList());
     }
 
     /** 单行化：日志按行存储，玩家内容里的 CR/LF 必须去掉，避免伪造整行记录。 */
