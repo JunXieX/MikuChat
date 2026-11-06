@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -136,12 +137,17 @@ public final class AsyncFileWriter {
      * 失败时关闭并移除该句柄，让下一次写入重建，同时输出一次告警（否则磁盘异常会静默丢日志）。
      */
     private void flushAll() {
-        for (Map.Entry<Path, BufferedWriter> entry : writers.entrySet()) {
+        // 遍历快照：flush 失败时要从 writers 中移除句柄，直接遍历 entrySet 会 CME
+        for (Path path : new ArrayList<>(writers.keySet())) {
+            BufferedWriter writer = writers.get(path);
+            if (writer == null) {
+                continue;
+            }
             try {
-                entry.getValue().flush();
+                writer.flush();
             } catch (IOException e) {
-                closeQuietly(writers.remove(entry.getKey()));
-                reportFailure("刷新日志文件失败，已关闭句柄等待重建: " + entry.getKey()
+                closeQuietly(writers.remove(path));
+                reportFailure("刷新日志文件失败，已关闭句柄等待重建: " + path
                         + " (" + e.getMessage() + "，累计 " + failures.incrementAndGet() + " 次)");
             }
         }

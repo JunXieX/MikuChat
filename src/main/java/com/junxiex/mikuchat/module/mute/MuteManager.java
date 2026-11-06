@@ -150,7 +150,7 @@ public final class MuteManager implements MuteService {
                 continue;
             }
             MuteInfo info = previous.get(uuid);
-            if (info != null) {
+            if (info != null && !info.expired()) {
                 loaded.put(uuid, info);
                 stillPending.add(uuid);
             }

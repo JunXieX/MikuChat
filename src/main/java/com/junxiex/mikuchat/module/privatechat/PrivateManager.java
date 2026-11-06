@@ -336,11 +336,10 @@ public final class PrivateManager {
             return;
         }
         // 只有这次跨服私聊仍是该玩家最后一次操作时才更新回复目标；
-        // 若之后又发过本地 /msg 或更新的跨服私聊，ACK 不能把指针退回旧对象。
-        if (!lastOutbound.remove(delivery.sender().getUniqueId(), id)) {
-            return;
+        // 若之后又发过本地 /msg 或更新的跨服私聊，ACK 不能把指针退回旧对象；但回显必须照常发送。
+        if (lastOutbound.remove(delivery.sender().getUniqueId(), id)) {
+            replyTargets.put(delivery.sender().getUniqueId(), delivery.targetName());
         }
-        replyTargets.put(delivery.sender().getUniqueId(), delivery.targetName());
         if (delivery.sender().isOnline()) {
             plugin.scheduler().atEntity(delivery.sender(), () -> delivery.sender().sendMessage(delivery.senderLine()));
         }
@@ -452,6 +451,7 @@ public final class PrivateManager {
     public void forget(UUID uuid) {
         // 回复目标仅保留会话期，玩家数据由 UserDataStore 统一在退出时释放
         replyTargets.remove(uuid);
+        lastOutbound.remove(uuid);
     }
 
     /**

@@ -1,9 +1,7 @@
 package com.junxiex.mikuchat.module.antispam;
 
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
-import java.util.List;
 
 /**
  * 单个玩家的刷屏检测状态，退出即清理。
@@ -51,8 +49,8 @@ final class PlayerSpamState {
         this.lastRefillNanos = value;
     }
 
-    List<String> history() {
-        return new ArrayList<>(history);
+    Iterable<String> history() {
+        return history;
     }
 
     void pushHistory(String message, int maxSize) {

@@ -5,15 +5,21 @@ import com.junxiex.mikuchat.core.config.ConfigFile;
 import com.junxiex.mikuchat.core.module.ChatModule;
 import com.junxiex.mikuchat.core.service.ChatLogService;
 
+import java.io.BufferedReader;
 import java.io.File;
-import java.io.RandomAccessFile;
+import java.io.InputStreamReader;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
@@ -108,7 +114,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         // 双重保险：无论调用方传入多大的 limit，都不超过配置的上限
         int effectiveLimit = limit > 0 ? Math.min(limit, configuredMax) : configuredMax;
         int days = Math.max(1, config.config().getInt("search-days", 7));
-        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 4096) * 1024);
+        int maxBytes = Math.max(64 * 1024, config.config().getInt("search-max-kilo-bytes", 65536) * 1024);
         String needle = keyword.toLowerCase(Locale.ROOT);
         plugin.scheduler().async(() -> {
             List<String> found = new ArrayList<>(Math.min(effectiveLimit, 64));
@@ -136,28 +142,34 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         if (maxResults <= 0) {
             return;
         }
-        String content;
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            long start = Math.max(0, raf.length() - maxBytes);
-            raf.seek(start);
-            byte[] buffer = new byte[(int) (raf.length() - start)];
-            raf.readFully(buffer);
-            content = new String(buffer, StandardCharsets.UTF_8);
+        long start = Math.max(0, file.length() - maxBytes);
+        Deque<String> tail = new ArrayDeque<>(Math.min(maxResults, 64));
+        try (FileChannel channel = FileChannel.open(file.toPath());
+             BufferedReader reader = new BufferedReader(new InputStreamReader(
+                     Channels.newInputStream(channel.position(start)), StandardCharsets.UTF_8))) {
+            // 从文件中段开始时第一行可能被截断；文件本身小于预算时保留第一行
+            if (start > 0) {
+                reader.readLine();
+            }
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.endsWith("\r")) {
+                    line = line.substring(0, line.length() - 1);
+                }
+                if (containsIgnoreCase(line, needle)) {
+                    tail.addLast(line);
+                    if (tail.size() > maxResults) {
+                        tail.removeFirst();
+                    }
+                }
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("读取聊天记录失败 " + file.getName() + ": " + e.getMessage());
             return;
         }
-        int firstNewline = content.indexOf('\n');
-        if (firstNewline >= 0) {
-            content = content.substring(firstNewline + 1);
-        }
-        String[] lines = content.split("\n");
-        int added = 0;
-        for (int i = lines.length - 1; i >= 0 && added < maxResults; i--) {
-            if (containsIgnoreCase(lines[i], needle)) {
-                found.add(lines[i]);
-                added++;
-            }
+        Iterator<String> descending = tail.descendingIterator();
+        while (descending.hasNext()) {
+            found.add(descending.next());
         }
     }
 

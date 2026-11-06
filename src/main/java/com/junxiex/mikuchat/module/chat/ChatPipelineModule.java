@@ -181,6 +181,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             }
         }
 
+        String originalText = raw;
         FilterService filter = plugin.services().find(FilterService.class).orElse(null);
         if (filter != null) {
             var result = filter.apply(sender, channel, raw);
@@ -200,7 +201,8 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         // 过滤之后再判刷屏：被拦截的消息不应消耗冷却/令牌，否则玩家改掉内容重发会被误报「发送太快」
         AntiSpamService antiSpam = plugin.services().find(AntiSpamService.class).orElse(null);
         if (antiSpam != null) {
-            var result = antiSpam.check(sender, channel, raw);
+            // 用过滤前原文判重：替换模式会把词遮成 "****"，用掩码文本会把正常消息误判为刷屏
+            var result = antiSpam.check(sender, channel, originalText);
             if (result.blocked()) {
                 if (!result.silent()) {
                     sender.sendMessage(antiSpam.feedback(plugin.lang(), result));
@@ -245,7 +247,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
             String lineJson = TextUtil.toJson(line);
             // 接收端按字符数限制组件体积；超限消息发送出去只会被丢弃，还会在短连接上放大带宽
             if (lineJson.length() > MAX_REMOTE_LINE_LENGTH
-                    || lineJson.getBytes(StandardCharsets.UTF_8).length > 30000) {
+                    || lineJson.getBytes(StandardCharsets.UTF_8).length > 24000) {
                 sender.sendMessage(plugin.lang().get("channel.cross-too-long"));
             } else {
                 network.publish(TYPE_CHAT, new NetworkService.ChatOutbound(

@@ -145,9 +145,6 @@ public final class MentionManager implements ChatTokenHandler, MentionNotifier {
     }
 
     private void handleNotifyMentioned(UUID senderId, List<String> mentioned, String channelDisplay) {
-        if (mentioned == null || mentioned.isEmpty()) {
-            return;
-        }
         boolean all = mentioned.contains("*");
         // 调用方已保证 channelDisplay 来自本服配置（跨服路径改用本地频道的显示名），
         // 因此这里可以按 MiniMessage 解析以保留频道样式。

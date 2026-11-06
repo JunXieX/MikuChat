@@ -1,6 +1,8 @@
 package com.junxiex.mikuchat.core.text;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.NBTComponent;
+import net.kyori.adventure.text.SelectorComponent;
 import net.kyori.adventure.text.TranslatableComponent;
 import net.kyori.adventure.text.TranslationArgument;
 import net.kyori.adventure.text.minimessage.MiniMessage;
@@ -92,6 +94,16 @@ public final class TextUtil {
                     }
                 }
                 result = translatable.arguments(cleaned);
+            }
+        } else if (result instanceof SelectorComponent selector) {
+            Component separator = selector.separator();
+            if (separator != null) {
+                result = selector.separator(stripInteractive(separator));
+            }
+        } else if (result instanceof NBTComponent<?> nbt) {
+            Component separator = nbt.separator();
+            if (separator != null) {
+                result = nbt.separator(stripInteractive(separator));
             }
         }
         List<Component> children = result.children();

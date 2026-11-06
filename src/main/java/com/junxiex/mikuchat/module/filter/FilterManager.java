@@ -189,11 +189,13 @@ public final class FilterManager implements FilterService {
         TextNormalizer.Normalized normalized = current.normalizer().normalize(visibleText);
         if (profile.advertisementEnabled()
                 && !detectAdvertisement(current, profile, visibleText, normalized).isEmpty()) {
-            plugin.debug("过滤二次校验拦截：可见文本命中广告规则，发送者 " + sender);
+            plugin.debug("过滤二次校验拦截：可见文本命中广告规则，发送者 "
+                    + (sender == null ? "?" : sender.getName()));
             return true;
         }
         if (!scanNormalized(current, visibleText, normalized).ranges().isEmpty()) {
-            plugin.debug("过滤二次校验拦截：可见文本命中屏蔽词，发送者 " + sender);
+            plugin.debug("过滤二次校验拦截：可见文本命中屏蔽词，发送者 "
+                    + (sender == null ? "?" : sender.getName()));
             return true;
         }
         return false;
