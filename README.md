@@ -35,7 +35,7 @@ MikuChat 是一套面向 Paper / Folia 服务端的聊天管理插件，配合 V
 1. 将 `MikuChat-<版本>.jar` 放入服务端 `plugins/` 目录。
 2. 启动服务端，插件会自动生成 `plugins/MikuChat/` 与全部默认配置。
 3. 按需修改 `config.yml`（语言、默认频道）与各模块配置文件，执行 `/mchat reload` 生效。
-4. 默认 `network.yml: enabled: false`，单服无需改动；未启用跨服时不会输出密钥告警，不影响本服聊天。
+4. 默认 `network.yml: enabled: false`，单服无需改动；未启用跨服时不会输出密钥告警，不影响本服聊天。从 1.8 升级且不使用跨服时，可把已有的 `enabled: true` 改为 `false`。
 
 ### 跨服安装（Paper/Folia + Velocity）
 

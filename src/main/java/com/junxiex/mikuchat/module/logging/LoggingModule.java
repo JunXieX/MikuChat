@@ -133,7 +133,8 @@ public final class LoggingModule implements ChatModule, ChatLogService {
             }
             if (truncated[0]) {
                 plugin.getLogger().info("聊天记录文件超过检索上限，仅扫描每个文件末尾 "
-                        + (maxBytes / 1024 / 1024) + "MB；可在 chatlog.yml 调整 search-max-kilo-bytes。");
+                        + Math.max(1, maxBytes / 1024 / 1024)
+                        + "MB；可在 chatlog.yml 调整 search-max-kilo-bytes。");
             }
             callback.accept(found);
         });

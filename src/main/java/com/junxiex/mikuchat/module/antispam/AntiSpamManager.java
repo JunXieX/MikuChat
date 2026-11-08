@@ -22,7 +22,7 @@ public final class AntiSpamManager implements AntiSpamService {
 
     /** 去掉空白、MiniMessage 标签与 § 色码；后两者不进入可见文本，不能用于绕过重复/相似检测。 */
     private static final java.util.regex.Pattern INVISIBLE =
-            java.util.regex.Pattern.compile("<[^<>]*>|§.|\\s+");
+            java.util.regex.Pattern.compile("<\\/?[a-zA-Z#][^<>]*>|§[0-9a-fk-orxX]|\\s+");
 
     private final MikuChat plugin;
     private final ConfigFile config;

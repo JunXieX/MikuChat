@@ -69,10 +69,14 @@ public final class MuteManager implements MuteService {
     public void load() {
         File file = new File(plugin.getDataFolder(), "mute.yml");
         if (!file.exists()) {
-            plugin.saveResource("mute.yml", false);
+            try {
+                plugin.saveResource("mute.yml", false);
+            } catch (RuntimeException e) {
+                plugin.getLogger().warning("生成 mute.yml 失败，将仅使用内存状态: " + e.getMessage());
+            }
         }
-        awaitLocalWrites();
         synchronized (cacheLock) {
+            awaitLocalWrites();
             Map<UUID, MuteInfo> loaded = new HashMap<>();
             pendingUpload.clear();
             pendingDeletes.clear();

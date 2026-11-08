@@ -107,19 +107,7 @@ public final class PrivateManager {
             return;
         }
 
-        // 私聊同样受防刷屏约束，避免用 /msg 绕过公开聊天的冷却与频率限制
-        com.junxiex.mikuchat.core.service.AntiSpamService antiSpam =
-                plugin.services().find(com.junxiex.mikuchat.core.service.AntiSpamService.class).orElse(null);
-        if (antiSpam != null) {
-            var spam = antiSpam.check(sender, null, message);
-            if (spam.blocked()) {
-                if (!spam.silent()) {
-                    sender.sendMessage(antiSpam.feedback(plugin.lang(), spam));
-                }
-                return;
-            }
-        }
-
+        String originalText = message;
         FilterService filter = plugin.services().find(FilterService.class).orElse(null);
         String content = message;
         if (filter != null) {
@@ -132,6 +120,19 @@ public final class PrivateManager {
                 return;
             }
             content = result.text();
+        }
+
+        // 过滤之后再判刷屏：被拦截的私聊不应消耗冷却，且用原文判定避免掩码文本误判
+        com.junxiex.mikuchat.core.service.AntiSpamService antiSpam =
+                plugin.services().find(com.junxiex.mikuchat.core.service.AntiSpamService.class).orElse(null);
+        if (antiSpam != null) {
+            var spam = antiSpam.check(sender, null, originalText);
+            if (spam.blocked()) {
+                if (!spam.silent()) {
+                    sender.sendMessage(antiSpam.feedback(plugin.lang(), spam));
+                }
+                return;
+            }
         }
 
         int maxLength = config.config().getInt("message-max-length", 256);

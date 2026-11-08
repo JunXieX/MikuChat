@@ -250,7 +250,7 @@ public final class MikuChatCommand implements BasicCommand {
         }
         int searchLimit = Math.max(LOG_PAGE_SIZE,
                 plugin.configManager().get("chatlog.yml").config().getInt("search-limit", LOG_MAX_RESULTS));
-        int maxPage = searchLimit / LOG_PAGE_SIZE;
+        int maxPage = (searchLimit + LOG_PAGE_SIZE - 1) / LOG_PAGE_SIZE;
         if (page > maxPage) {
             page = maxPage;
         }
