@@ -52,7 +52,10 @@ public final class ChannelManager implements ChannelService {
                             + " 无效，已按 SERVER 处理。");
                 }
                 String id = yaml.getString("id", file.getName().replace(".yml", ""));
-                loaded.put(id.toLowerCase(Locale.ROOT), new Channel(id, yaml));
+                if (loaded.put(id.toLowerCase(Locale.ROOT), new Channel(id, yaml)) != null) {
+                    plugin.getLogger().warning("频道 id 重复：" + id + "（文件 " + file.getName()
+                            + "），后加载的定义会覆盖先前的；请为每个频道设置唯一 id。");
+                }
             }
         }
         this.channels = loaded;

@@ -123,7 +123,7 @@ public final class VelocityNetworkModule implements ChatModule, NetworkService, 
         if (sharedSecret.isEmpty()) {
             // 没有共享密钥就无法证明消息来自代理端：客户端同样能向该通道发送插件消息，
             // 伪造 STATE_SYNC / MUTE_UPDATE 即可清空禁言或冒充他人。宁可不启用跨服。
-            plugin.getLogger().severe("跨服功能已禁用：network.yml 的 shared-secret 为空。"
+            plugin.getLogger().warning("跨服功能已禁用：network.yml 的 shared-secret 为空。"
                     + "请在后端 network.yml 与 Velocity 端 plugins/MikuChat/config.yml 配置相同的 shared-secret 后重载。");
             available = false;
             return;

@@ -36,11 +36,6 @@ public final class AdDetector {
         this.whitelist = normalizedWhitelist;
     }
 
-    /** 是否存在非白名单的广告命中。 */
-    public boolean isAdvertisement(String text) {
-        return !findMatches(text).isEmpty();
-    }
-
     /** 返回所有非白名单命中区间 [start, end)。 */
     public List<int[]> findMatches(String text) {
         List<int[]> matches = new ArrayList<>();

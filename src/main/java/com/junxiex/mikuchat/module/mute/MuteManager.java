@@ -67,6 +67,11 @@ public final class MuteManager implements MuteService {
     }
 
     public void load() {
+        File file = new File(plugin.getDataFolder(), "mute.yml");
+        if (!file.exists()) {
+            plugin.saveResource("mute.yml", false);
+        }
+        awaitLocalWrites();
         synchronized (cacheLock) {
             Map<UUID, MuteInfo> loaded = new HashMap<>();
             pendingUpload.clear();
@@ -368,6 +373,16 @@ public final class MuteManager implements MuteService {
                 plugin.getLogger().warning("保存 mute.yml 失败: " + e.getMessage());
             }
         });
+    }
+
+    /** reload 前等待已排队的本地写入完成，避免读到旧文件后把刚下发的禁言覆盖掉。 */
+    private void awaitLocalWrites() {
+        try {
+            localFileExecutor.submit(() -> {
+            }).get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            plugin.getLogger().warning("等待 mute.yml 写入完成失败: " + e.getMessage());
+        }
     }
 
     private void submitLocalWrite(Runnable task) {

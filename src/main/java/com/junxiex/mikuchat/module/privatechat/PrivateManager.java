@@ -125,8 +125,10 @@ public final class PrivateManager {
         if (filter != null) {
             var result = filter.apply(sender, null, message);
             if (result.blocked()) {
-                sender.sendMessage(plugin.lang().get(result.advertisement()
-                        ? "filter.ad-blocked" : "filter.blocked"));
+                if (result.notified()) {
+                    sender.sendMessage(plugin.lang().get(result.advertisement()
+                            ? "filter.ad-blocked" : "filter.blocked"));
+                }
                 return;
             }
             content = result.text();

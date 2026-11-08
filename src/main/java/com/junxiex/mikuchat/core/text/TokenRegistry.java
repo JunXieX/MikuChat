@@ -102,31 +102,9 @@ public final class TokenRegistry {
         return new Snapshot(Pattern.compile(builder.toString()), List.copyOf(handlers));
     }
 
-    /** 把 {@link Pattern} 的 flags 转成内联标志字母；无法内联表达的位直接忽略。 */
+    /** 当前处理器只用 CASE_INSENSITIVE；其它 flags 不参与合并。 */
     private static String inlineFlags(int flags) {
-        StringBuilder letters = new StringBuilder(4);
-        if ((flags & Pattern.CASE_INSENSITIVE) != 0) {
-            letters.append('i');
-        }
-        if ((flags & Pattern.MULTILINE) != 0) {
-            letters.append('m');
-        }
-        if ((flags & Pattern.DOTALL) != 0) {
-            letters.append('s');
-        }
-        if ((flags & Pattern.UNICODE_CASE) != 0) {
-            letters.append('u');
-        }
-        if ((flags & Pattern.COMMENTS) != 0) {
-            letters.append('x');
-        }
-        if ((flags & Pattern.UNICODE_CHARACTER_CLASS) != 0) {
-            letters.append('U');
-        }
-        if ((flags & Pattern.UNIX_LINES) != 0) {
-            letters.append('d');
-        }
-        return letters.toString();
+        return (flags & Pattern.CASE_INSENSITIVE) != 0 ? "i" : "";
     }
 
     /** 一次构建产物：组合正则与与之匹配的处理器快照。 */
