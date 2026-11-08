@@ -180,10 +180,6 @@ public final class DisplayManager implements ChatTokenHandler {
 
     private Component renderItem(Player player) {
         ItemStack stack = player.getInventory().getItemInMainHand();
-        if (isAir(stack)) {
-            notifyLimited(player, "empty:ITEM", () -> plugin.lang().get("display.no-item"));
-            return null;
-        }
         Component label = plugin.lang().get("display.label-item");
         try {
             // Paper 的 ItemStack#asHoverEvent 要求数量在 1..99 之间，否则抛 IllegalArgumentException。
@@ -209,20 +205,22 @@ public final class DisplayManager implements ChatTokenHandler {
     /** 调用方已确认背包非空，这里只负责构建展示内容。 */
     private Component buildGrid(Player player, Inventory inventory, int size, String titleKey) {
         Component result = plugin.lang().get(titleKey, "player", player.getName());
+        Component emptySlot = plugin.lang().get("display.empty-slot");
         int rows = size / 9;
         for (int row = 0; row < rows; row++) {
             Component line = Component.empty();
             for (int col = 0; col < 9; col++) {
-                line = line.append(compact(inventory.getItem(row * 9 + col))).append(Component.text("  "));
+                line = line.append(compact(inventory.getItem(row * 9 + col), emptySlot))
+                        .append(Component.text("  "));
             }
             result = result.append(Component.newline()).append(line);
         }
         return result;
     }
 
-    private Component compact(ItemStack stack) {
+    private Component compact(ItemStack stack, Component emptySlot) {
         if (stack == null || stack.getType().isAir()) {
-            return plugin.lang().get("display.empty-slot");
+            return emptySlot;
         }
         Component name = stack.displayName();
         String plain = TextUtil.plain(name);

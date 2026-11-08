@@ -105,10 +105,6 @@ public final class Lang {
         return parseSafe(value);
     }
 
-    public Component get(String key, Map<String, String> placeholders) {
-        return parseSafe(raw(key, placeholders));
-    }
-
     /** 直接解析一段 MiniMessage 文案（用于配置中内联的格式）。 */
     public Component parse(String miniMessage) {
         return parseSafe(miniMessage);

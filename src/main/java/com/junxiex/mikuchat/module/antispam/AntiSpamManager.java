@@ -20,8 +20,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class AntiSpamManager implements AntiSpamService {
 
-    /** 预编译：String#replaceAll 每次都会重新编译正则，属于消息热路径。 */
-    private static final java.util.regex.Pattern WHITESPACE = java.util.regex.Pattern.compile("\\s+");
+    /** 去掉空白、MiniMessage 标签与 § 色码；后两者不进入可见文本，不能用于绕过重复/相似检测。 */
+    private static final java.util.regex.Pattern INVISIBLE =
+            java.util.regex.Pattern.compile("<\\/?[a-zA-Z#][^<>]*>|§[0-9a-fk-orxX]|\\s+");
 
     private final MikuChat plugin;
     private final ConfigFile config;
@@ -37,7 +38,7 @@ public final class AntiSpamManager implements AntiSpamService {
 
     public void load() {
         plugin.configManager().reload("antispam.yml");
-        this.defaultProfile = config.config().getString("default-profile", "default");
+        String wanted = config.config().getString("default-profile", "default").toLowerCase(Locale.ROOT);
         Map<String, AntiSpamProfile> loaded = new LinkedHashMap<>();
         ConfigurationSection section = config.config().getConfigurationSection("profiles");
         if (section != null) {
@@ -49,6 +50,8 @@ public final class AntiSpamManager implements AntiSpamService {
             }
         }
         this.profiles = loaded;
+        this.defaultProfile = loaded.containsKey(wanted) ? wanted
+                : loaded.keySet().stream().findFirst().orElse("default");
     }
 
     @Override
@@ -61,7 +64,8 @@ public final class AntiSpamManager implements AntiSpamService {
             return Result.PASS;
         }
         PlayerSpamState state = states.computeIfAbsent(sender.getUniqueId(), k -> new PlayerSpamState());
-        long now = System.currentTimeMillis();
+        // 用单调时钟：系统时间回拨时不会把全服玩家锁在「冷却中」
+        long now = System.nanoTime() / 1_000_000L;
 
         // 「查冷却 → 判频率 → 判重复/相似 → 记录本次」是一个整体判定，必须与同一玩家的
         // 其它并发调用互斥：否则两条消息可能同时通过冷却检查，使冷却形同虚设。
@@ -78,8 +82,8 @@ public final class AntiSpamManager implements AntiSpamService {
 
     /** 在持有该玩家状态锁的前提下完成整套判定。 */
     private Result evaluateLocked(PlayerSpamState state, AntiSpamProfile profile, String text, long now) {
-        if (profile.cooldownEnabled() && profile.cooldownMillis() > 0 && state.lastMessageAt() > 0) {
-            long elapsed = now - state.lastMessageAt();
+        if (profile.cooldownEnabled() && profile.cooldownMillis() > 0 && state.lastMessageAt > 0) {
+            long elapsed = now - state.lastMessageAt;
             if (elapsed < profile.cooldownMillis()) {
                 return blocked(profile, Type.COOLDOWN, profile.cooldownMillis() - elapsed);
             }
@@ -100,7 +104,7 @@ public final class AntiSpamManager implements AntiSpamService {
             return blocked(profile, Type.THROTTLE, 0);
         }
 
-        state.lastMessageAt(now);
+        state.lastMessageAt = now;
         state.pushHistory(normalize(text), profile.historySize());
         return Result.PASS;
     }
@@ -127,18 +131,18 @@ public final class AntiSpamManager implements AntiSpamService {
     private boolean consumeToken(PlayerSpamState state, AntiSpamProfile profile) {
         double capacity = profile.throttleMax();
         long now = System.nanoTime();
-        if (!state.initialized()) {
+        if (!state.initialized) {
             // 玩家首次发言：令牌桶视为已满，避免第一条消息被误判为高频
-            state.tokens(capacity);
-            state.lastRefillNanos(now);
-            state.initialized(true);
+            state.tokens = capacity;
+            state.lastRefillNanos = now;
+            state.initialized = true;
         }
         double ratePerMilli = capacity / (double) profile.throttlePeriodMillis();
-        long elapsedNanos = now - state.lastRefillNanos();
-        state.lastRefillNanos(now);
-        state.tokens(Math.min(capacity, state.tokens() + elapsedNanos / 1_000_000.0 * ratePerMilli));
-        if (state.tokens() >= 1.0) {
-            state.tokens(state.tokens() - 1.0);
+        long elapsedNanos = now - state.lastRefillNanos;
+        state.lastRefillNanos = now;
+        state.tokens = Math.min(capacity, state.tokens + elapsedNanos / 1_000_000.0 * ratePerMilli);
+        if (state.tokens >= 1.0) {
+            state.tokens -= 1.0;
             return true;
         }
         return false;
@@ -151,7 +155,7 @@ public final class AntiSpamManager implements AntiSpamService {
         }
         double threshold = profile.similarityThreshold();
         double prefilter = threshold * 0.6;
-        for (String previous : state.history()) {
+        for (String previous : state.history) {
             if (previous.length() < profile.similarityMinLength()) {
                 continue;
             }
@@ -175,7 +179,7 @@ public final class AntiSpamManager implements AntiSpamService {
      * （如 8 个问号会试到 {@code ??}），白名单里只有 {@code ?} 时反而误判为刷屏。
      */
     private boolean isRepetition(String text, AntiSpamProfile profile) {
-        String stripped = WHITESPACE.matcher(text).replaceAll("");
+        String stripped = INVISIBLE.matcher(text).replaceAll("");
         int minRepeat = profile.repetitionMinRepeat();
         if (stripped.length() < minRepeat) {
             return false;
@@ -214,25 +218,14 @@ public final class AntiSpamManager implements AntiSpamService {
     }
 
     private String normalize(String text) {
-        return WHITESPACE.matcher(text).replaceAll("").toLowerCase(Locale.ROOT);
+        return INVISIBLE.matcher(text).replaceAll("").toLowerCase(Locale.ROOT);
     }
 
     private AntiSpamProfile profileFor(ChannelView channel) {
-        String id = channel == null ? null : channel.antispamProfile();
-        if (id == null) {
-            id = defaultProfile;
-        }
+        String id = channel != null && channel.antispamProfile() != null
+                ? channel.antispamProfile() : defaultProfile;
         AntiSpamProfile profile = profiles.get(id.toLowerCase(Locale.ROOT));
-        if (profile != null) {
-            return profile;
-        }
-        profile = profiles.get(defaultProfile);
-        if (profile != null) {
-            return profile;
-        }
-        // 只在真正落到兜底时才遍历：getOrDefault 的默认值参数会被急切求值，
-        // 放在热路径上会对每条消息都做一次无谓的 stream 分配。
-        return profiles.values().stream().findFirst().orElse(null);
+        return profile != null ? profile : profiles.get(defaultProfile);
     }
 
     @Override

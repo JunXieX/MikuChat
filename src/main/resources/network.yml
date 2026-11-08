@@ -9,7 +9,8 @@
 # ⚠ 后端必须运行在该 Velocity 代理下，且 config.yml 的 server-id 必须与
 #   velocity.toml 中 [servers] 的服务器名完全一致，否则跨服转发与在线查询会错乱。
 
-enabled: true
+# 单服保持 false 即可；需要跨服时改为 true 并配置 shared-secret
+enabled: false
 
 # 插件消息通道，代理端插件使用同一通道名
 channel: "mikuchat:proxy"

@@ -18,7 +18,5 @@ public interface MetaBridge {
     /** 解析单个 PlaceholderAPI 表达式（不含两侧 %），返回原始文本。 */
     String placeholder(Player player, String params);
 
-    boolean hasLuckPerms();
-
     boolean hasPlaceholderApi();
 }

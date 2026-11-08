@@ -90,7 +90,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
     }
 
     @Override
-    public void record(String channelId, String senderName, String message, boolean remote) {
+    public void record(String channelId, String senderName, String message) {
         if (!config.config().getBoolean("enabled", true)) {
             return;
         }
@@ -118,6 +118,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         String needle = keyword.toLowerCase(Locale.ROOT);
         plugin.scheduler().async(() -> {
             List<String> found = new ArrayList<>(Math.min(effectiveLimit, 64));
+            boolean[] truncated = {false};
             File[] files = directory().toFile().listFiles((dir, name) -> name.endsWith(".log"));
             if (files != null) {
                 Arrays.sort(files, Comparator.comparing(File::getName).reversed());
@@ -127,8 +128,13 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                         break;
                     }
                     processed++;
-                    collectFromFile(file, needle, effectiveLimit - found.size(), maxBytes, found);
+                    collectFromFile(file, needle, effectiveLimit - found.size(), maxBytes, found, truncated);
                 }
+            }
+            if (truncated[0]) {
+                plugin.getLogger().info("聊天记录文件超过检索上限，仅扫描每个文件末尾 "
+                        + Math.max(1, maxBytes / 1024 / 1024)
+                        + "MB；可在 chatlog.yml 调整 search-max-kilo-bytes。");
             }
             callback.accept(found);
         });
@@ -138,11 +144,15 @@ public final class LoggingModule implements ChatModule, ChatLogService {
      * 只读取文件末尾 {@code maxBytes}，从新到旧取命中。日志按天增长，
      * 全量扫描几天前的文件对「查最近聊天」没有意义，还会随运行时间线性变慢。
      */
-    private void collectFromFile(File file, String needle, int maxResults, int maxBytes, List<String> found) {
+    private void collectFromFile(File file, String needle, int maxResults, int maxBytes,
+                                 List<String> found, boolean[] truncated) {
         if (maxResults <= 0) {
             return;
         }
         long start = Math.max(0, file.length() - maxBytes);
+        if (start > 0) {
+            truncated[0] = true;
+        }
         Deque<String> tail = new ArrayDeque<>(Math.min(maxResults, 64));
         try (FileChannel channel = FileChannel.open(file.toPath());
              BufferedReader reader = new BufferedReader(new InputStreamReader(
@@ -156,7 +166,7 @@ public final class LoggingModule implements ChatModule, ChatLogService {
                 if (line.endsWith("\r")) {
                     line = line.substring(0, line.length() - 1);
                 }
-                if (line.toLowerCase(Locale.ROOT).contains(needle)) {
+                if (containsIgnoreCase(line, needle)) {
                     tail.addLast(line);
                     if (tail.size() > maxResults) {
                         tail.removeFirst();
@@ -171,6 +181,22 @@ public final class LoggingModule implements ChatModule, ChatLogService {
         while (descending.hasNext()) {
             found.add(descending.next());
         }
+    }
+
+    /** 无分配大小写不敏感包含：先比较首字符，命中后再做 regionMatches。 */
+    private static boolean containsIgnoreCase(String line, String lowerNeedle) {
+        int length = lowerNeedle.length();
+        if (length == 0 || line.length() < length) {
+            return false;
+        }
+        char first = lowerNeedle.charAt(0);
+        for (int i = 0; i + length <= line.length(); i++) {
+            if (Character.toLowerCase(line.charAt(i)) == first
+                    && line.regionMatches(true, i, lowerNeedle, 0, length)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Path directory() {

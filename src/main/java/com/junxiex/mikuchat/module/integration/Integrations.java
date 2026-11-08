@@ -48,17 +48,13 @@ public final class Integrations implements MetaBridge {
         Plugin papiPlugin = Bukkit.getPluginManager().getPlugin("PlaceholderAPI");
         this.placeholderApi = papiConfigured && papiPlugin != null && papiPlugin.isEnabled();
 
-        plugin.getLogger().info("Integrations -> LuckPerms: " + hasLuckPerms() + ", PlaceholderAPI: " + placeholderApi);
+        plugin.getLogger().info("Integrations -> LuckPerms: " + (luckPerms != null)
+                + ", PlaceholderAPI: " + placeholderApi);
     }
 
     public void unload() {
         this.luckPerms = null;
         this.placeholderApi = false;
-    }
-
-    @Override
-    public boolean hasLuckPerms() {
-        return luckPerms != null;
     }
 
     @Override

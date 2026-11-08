@@ -12,9 +12,8 @@ public interface ChatLogService {
      * @param channelId  频道 id
      * @param senderName 发送者名
      * @param message    纯文本内容
-     * @param remote     是否来自其它服务器
      */
-    void record(String channelId, String senderName, String message, boolean remote);
+    void record(String channelId, String senderName, String message);
 
     /**
      * 关键词检索（玩家名或内容）。异步执行，callback 在异步线程回调，结果按时间倒序。

@@ -56,17 +56,14 @@ public final class ModuleManager {
         }
     }
 
-    public int reloadAll() {
-        int count = 0;
+    public void reloadAll() {
         for (ChatModule module : modules.values()) {
             try {
                 module.reload();
-                count++;
             } catch (Exception e) {
                 plugin.getLogger().severe("Failed to reload module " + module.id() + ": " + e.getMessage());
             }
         }
-        return count;
     }
 
     private void enable(ChatModule module) {

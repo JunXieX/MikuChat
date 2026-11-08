@@ -145,7 +145,7 @@ public final class StyleFilter {
             return false;
         }
         if (normalized.startsWith("#")) {
-            // 必须校验为合法的 3/6 位十六进制：非法色值会让 MiniMessage 解析抛异常，
+            // 必须校验为合法的 6 位十六进制：非法色值会让 MiniMessage 解析抛异常，
             // 而异常会沿整条消息的渲染链上抛，最终表现为「玩家发不出任何消息」。
             return has(player, "color-hex") && isHexColor(normalized);
         }

@@ -33,13 +33,13 @@ import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
- * 聊天管线模块：接管 AsyncChatEvent，编排「禁言 → 防刷屏 → 过滤 → 组装 → 投递」完整流程。
+ * 聊天管线模块：接管 AsyncChatEvent，编排「禁言 → 过滤 → 防刷屏 → 组装 → 投递」完整流程。
  * 监听器在异步线程触发，实际处理调度到发送者所在线程，保证 Folia 下的线程安全。
  */
 public final class ChatPipelineModule implements ChatModule, Listener {
 
     private static final String TYPE_CHAT = "CHAT";
-    /** 跨服聊天组件 JSON 的最大长度，超出即视为可疑并丢弃（与私聊保持一致）。 */
+    /** 跨服聊天组件 JSON 的字符上限，超出即丢弃。 */
     private static final int MAX_REMOTE_LINE_LENGTH = 16384;
 
     private final MikuChat plugin;
@@ -186,8 +186,10 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         if (filter != null) {
             var result = filter.apply(sender, channel, raw);
             if (result.blocked()) {
-                sender.sendMessage(plugin.lang().get(result.advertisement()
-                        ? "filter.ad-blocked" : "filter.blocked"));
+                if (result.notified()) {
+                    sender.sendMessage(plugin.lang().get(result.advertisement()
+                            ? "filter.ad-blocked" : "filter.blocked"));
+                }
                 return;
             }
             if (result.modified()) {
@@ -257,7 +259,7 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         }
 
         notifyMentions(sender.getUniqueId(), composed.mentions(), channel.displayName());
-        record(channel, sender.getName(), TextUtil.oneLine(raw), false);
+        record(channel, sender.getName(), TextUtil.oneLine(raw));
     }
 
     /**
@@ -285,13 +287,13 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         }
     }
 
-    private void record(ChannelView channel, String senderName, String message, boolean remote) {
+    private void record(ChannelView channel, String senderName, String message) {
         if (!channel.log()) {
             return;
         }
         ChatLogService log = plugin.services().find(ChatLogService.class).orElse(null);
         if (log != null) {
-            log.record(channel.id(), senderName, message, remote);
+            log.record(channel.id(), senderName, message);
         }
     }
 
@@ -350,6 +352,6 @@ public final class ChatPipelineModule implements ChatModule, Listener {
         notifyMentions(packet.senderId(), packet.mentions() == null ? List.of() : packet.mentions(),
                 channel.displayName());
         record(channel, packet.senderName() == null ? "" : packet.senderName(),
-                TextUtil.oneLine(packet.rawText()), true);
+                TextUtil.oneLine(packet.rawText()));
     }
 }

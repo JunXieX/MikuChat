@@ -28,12 +28,6 @@ public final class ConfigManager {
         }
     }
 
-    public void reloadAll() {
-        for (ConfigFile file : files.values()) {
-            file.load();
-        }
-    }
-
     public boolean reload(String path) {
         ConfigFile file = files.get(path);
         if (file == null) {

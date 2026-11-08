@@ -50,7 +50,7 @@ public final class FilterManager implements FilterService {
     public void load() {
         plugin.configManager().reload("filter/config.yml");
         String bypassPermission = config.config().getString("bypass-permission", "mikuchat.bypass.filter");
-        String defaultProfile = config.config().getString("default-profile", "default");
+        String wantedProfile = config.config().getString("default-profile", "default").toLowerCase(Locale.ROOT);
         boolean asciiWordBoundary = config.config().getBoolean("matching.ascii-word-boundary", true);
         int minLength = Math.max(1, config.config().getInt("matching.min-length", 2));
 
@@ -94,9 +94,11 @@ public final class FilterManager implements FilterService {
             }
         }
         if (loadedProfiles.isEmpty()) {
-            loadedProfiles.put(defaultProfile.toLowerCase(Locale.ROOT), FilterProfile.fallback(loaded.replacement()));
+            loadedProfiles.put(wantedProfile, FilterProfile.fallback(loaded.replacement()));
             plugin.getLogger().warning("filter/config.yml 未定义任何 profiles，已启用兜底策略（仅替换屏蔽词，不拦截广告）。");
         }
+        String defaultProfile = loadedProfiles.containsKey(wantedProfile) ? wantedProfile
+                : loadedProfiles.keySet().stream().findFirst().orElse(wantedProfile);
 
         List<String> whitelist = new ArrayList<>();
         for (String phrase : loaded.whitelist()) {
@@ -216,17 +218,9 @@ public final class FilterManager implements FilterService {
             return false;
         }
         State current = state;
-        // 与 profileFor 保持一致：profile 的 key 在加载时统一小写，
-        // 这里若用原始大小写的 defaultProfile 查找，配置写成大写时会取不到而回落到首个 profile。
-        FilterProfile profile = current.profiles().get(current.defaultProfile().toLowerCase(java.util.Locale.ROOT));
-        if (profile == null) {
-            profile = current.profiles().getOrDefault(current.defaultProfile(),
-                    current.profiles().values().stream().findFirst().orElse(null));
-        }
-        if (profile == null || !profile.advertisementEnabled()) {
-            return false;
-        }
-        return !detectAdvertisement(current, profile, text, current.normalizer().normalize(text)).isEmpty();
+        FilterProfile profile = profileFor(current, null);
+        return profile != null && profile.advertisementEnabled()
+                && !detectAdvertisement(current, profile, text, current.normalizer().normalize(text)).isEmpty();
     }
 
     public int wordCount() {
@@ -348,11 +342,7 @@ public final class FilterManager implements FilterService {
             id = current.defaultProfile();
         }
         FilterProfile profile = current.profiles().get(id.toLowerCase(Locale.ROOT));
-        if (profile != null) {
-            return profile;
-        }
-        return current.profiles().getOrDefault(current.defaultProfile(),
-                current.profiles().values().stream().findFirst().orElse(null));
+        return profile != null ? profile : current.profiles().get(current.defaultProfile());
     }
 
     private List<int[]> merge(List<int[]> ranges) {
